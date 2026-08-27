@@ -1,4 +1,4 @@
-package dataStructures
+package ds
 
 import (
 	"errors"
@@ -11,16 +11,22 @@ type SDS struct {
 const MaxStringSize = 512 << 20
 const oneMB int = 1 << 20
 
-var ErrEmptyData = errors.New("Empty string")
-var ErrStringTooLarge = errors.New("String exceeds maximum allowed size")
+var ErrEmptyData = errors.New("empty string")
+var ErrStringTooLarge = errors.New("string exceeds maximum allowed size")
 
-func NewSDS(data []byte) *SDS {
+func NewSDS(data []byte) (*SDS, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+	if len(data) > MaxStringSize {
+		return nil, ErrStringTooLarge
+	}
 	b := make([]byte, len(data))
 	copy(b, data)
 
 	return &SDS{
 		buf: b,
-	}
+	}, nil
 }
 
 func (s *SDS) Len() int {
@@ -42,7 +48,11 @@ func (s *SDS) Bytes() []byte {
 func (s *SDS) Append(data []byte) error {
 	addedLen := len(data)
 	if addedLen == 0 {
-		return ErrEmptyData
+		return nil
+	}
+
+	if s.CheckStringLength(len(data), len(s.buf)) {
+		return ErrStringTooLarge
 	}
 
 	oldLen := len(s.buf)
@@ -50,7 +60,7 @@ func (s *SDS) Append(data []byte) error {
 	available := s.Free()
 
 	if available < addedLen {
-		newCap, err := s.nextCapacity(data, cap(s.buf))
+		newCap, err := s.nextCapacity(data, len(s.buf))
 		if err != nil {
 			return err
 		}
@@ -69,16 +79,12 @@ func (s *SDS) nextCapacity(added []byte, actual int) (int, error) {
 	required := addedLen + actual
 	doubleLen := required * 2
 
-	if s.CheckStringLength(added, actual) {
-		return 0, ErrStringTooLarge
-	}
-
 	if required < oneMB {
 		return doubleLen, nil
 	}
 	return required + oneMB, nil
 }
 
-func (s *SDS) CheckStringLength(data []byte, size int) bool {
-	return len(data) > MaxStringSize-size
+func (s *SDS) CheckStringLength(data, size int) bool {
+	return data > MaxStringSize-size
 }
