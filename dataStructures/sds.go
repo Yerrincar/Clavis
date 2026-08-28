@@ -11,12 +11,12 @@ type SDS struct {
 const MaxStringSize = 512 << 20
 const oneMB int = 1 << 20
 
-var ErrEmptyData = errors.New("empty string")
+var ErrNegativeSize = errors.New("negative size string")
 var ErrStringTooLarge = errors.New("string exceeds maximum allowed size")
 
 func NewSDS(data []byte) (*SDS, error) {
 	if len(data) == 0 {
-		return nil, nil
+		return &SDS{}, nil
 	}
 	if len(data) > MaxStringSize {
 		return nil, ErrStringTooLarge
@@ -45,6 +45,7 @@ func (s *SDS) Bytes() []byte {
 	return s.buf
 }
 
+/*
 func (s *SDS) Append(data []byte) error {
 	addedLen := len(data)
 	if addedLen == 0 {
@@ -60,7 +61,7 @@ func (s *SDS) Append(data []byte) error {
 	available := s.Free()
 
 	if available < addedLen {
-		newCap, err := s.nextCapacity(data, len(s.buf))
+		newCap, err := s.nextCapacity(addedLen, len(s.buf))
 		if err != nil {
 			return err
 		}
@@ -73,16 +74,63 @@ func (s *SDS) Append(data []byte) error {
 	copy(s.buf[oldLen:], data)
 	return nil
 }
+*/
 
-func (s *SDS) nextCapacity(added []byte, actual int) (int, error) {
-	addedLen := len(added)
-	required := addedLen + actual
+func (s *SDS) sdsIncrLen(incr int) error {
+	if s.CheckStringLength(incr, len(s.buf)) {
+		return ErrStringTooLarge
+	}
+	newLen := len(s.buf) + incr
+
+	if incr >= 0 {
+		if newLen > cap(s.buf) {
+			return errors.New("increment exceeds allocated capacity")
+		}
+	} else {
+		if newLen < 0 {
+			return errors.New("decrement results in negative length")
+		}
+	}
+	s.buf = s.buf[:newLen]
+
+	return nil
+}
+
+func (s *SDS) MakeRoomFor(additionalBytes int) error {
+	if additionalBytes == 0 {
+		return nil
+	}
+
+	if additionalBytes < 0 {
+		return ErrNegativeSize
+	}
+
+	if s.CheckStringLength(additionalBytes, len(s.buf)) {
+		return ErrStringTooLarge
+	}
+
+	available := s.Free()
+
+	if available >= additionalBytes {
+		return nil
+	}
+
+	newCap := s.nextCapacity(additionalBytes, len(s.buf))
+
+	newBuf := make([]byte, len(s.buf), newCap)
+	copy(newBuf, s.buf)
+	s.buf = newBuf
+	return nil
+}
+
+func (s *SDS) nextCapacity(added, actual int) int {
+	required := added + actual
 	doubleLen := required * 2
 
 	if required < oneMB {
-		return doubleLen, nil
+		return doubleLen
 	}
-	return required + oneMB, nil
+	return required + oneMB
 }
 
 func (s *SDS) CheckStringLength(data, size int) bool {
