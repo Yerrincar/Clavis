@@ -1,4 +1,4 @@
-package ds
+package sds
 
 import (
 	"errors"
@@ -37,8 +37,15 @@ func (s *SDS) Cap() int {
 	return cap(s.buf)
 }
 
-func (s *SDS) Free() int {
+func (s *SDS) Available() int {
 	return cap(s.buf) - len(s.buf)
+}
+
+func (s *SDS) AvailableWritableRegion(maxCap int) ([]byte, error) {
+	if maxCap <= s.Available() && maxCap >= 0 {
+		return s.buf[len(s.buf) : len(s.buf)+maxCap], nil
+	}
+	return nil, errors.New("max cap exceeds available writable bytes")
 }
 
 func (s *SDS) Bytes() []byte {
@@ -46,37 +53,37 @@ func (s *SDS) Bytes() []byte {
 }
 
 /*
-func (s *SDS) Append(data []byte) error {
-	addedLen := len(data)
-	if addedLen == 0 {
+	func (s *SDS) Append(data []byte) error {
+		addedLen := len(data)
+		if addedLen == 0 {
+			return nil
+		}
+
+		if s.CheckStringLength(len(data), len(s.buf)) {
+			return ErrStringTooLarge
+		}
+
+		oldLen := len(s.buf)
+		required := oldLen + addedLen
+		available := s.Available()
+
+		if available < addedLen {
+			newCap, err := s.nextCapacity(addedLen, len(s.buf))
+			if err != nil {
+				return err
+			}
+			newBuf := make([]byte, len(s.buf), newCap)
+			copy(newBuf, s.buf)
+
+			s.buf = newBuf
+		}
+		s.buf = s.buf[:required]
+		copy(s.buf[oldLen:], data)
 		return nil
 	}
-
-	if s.CheckStringLength(len(data), len(s.buf)) {
-		return ErrStringTooLarge
-	}
-
-	oldLen := len(s.buf)
-	required := oldLen + addedLen
-	available := s.Free()
-
-	if available < addedLen {
-		newCap, err := s.nextCapacity(addedLen, len(s.buf))
-		if err != nil {
-			return err
-		}
-		newBuf := make([]byte, len(s.buf), newCap)
-		copy(newBuf, s.buf)
-
-		s.buf = newBuf
-	}
-	s.buf = s.buf[:required]
-	copy(s.buf[oldLen:], data)
-	return nil
-}
 */
 
-func (s *SDS) sdsIncrLen(incr int) error {
+func (s *SDS) IncrLen(incr int) error {
 	if s.CheckStringLength(incr, len(s.buf)) {
 		return ErrStringTooLarge
 	}
@@ -109,7 +116,7 @@ func (s *SDS) MakeRoomFor(additionalBytes int) error {
 		return ErrStringTooLarge
 	}
 
-	available := s.Free()
+	available := s.Available()
 
 	if available >= additionalBytes {
 		return nil
