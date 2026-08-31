@@ -52,36 +52,47 @@ func (s *SDS) Bytes() []byte {
 	return s.buf
 }
 
-/*
-	func (s *SDS) Append(data []byte) error {
-		addedLen := len(data)
-		if addedLen == 0 {
-			return nil
-		}
+func (s *SDS) RemoveFreeSpace() {
+	s.Resize(s.Len())
+}
 
-		if s.CheckStringLength(len(data), len(s.buf)) {
-			return ErrStringTooLarge
-		}
-
-		oldLen := len(s.buf)
-		required := oldLen + addedLen
-		available := s.Available()
-
-		if available < addedLen {
-			newCap, err := s.nextCapacity(addedLen, len(s.buf))
-			if err != nil {
-				return err
-			}
-			newBuf := make([]byte, len(s.buf), newCap)
-			copy(newBuf, s.buf)
-
-			s.buf = newBuf
-		}
-		s.buf = s.buf[:required]
-		copy(s.buf[oldLen:], data)
-		return nil
+func (s *SDS) Resize(size int) {
+	if size < 0 {
+		return
 	}
-*/
+
+	if cap(s.buf) == size {
+		return
+	}
+
+	if size < len(s.buf) {
+		s.buf = s.buf[:size]
+	}
+
+	newCap := size
+	newBuf := make([]byte, len(s.buf), newCap)
+	copy(newBuf, s.buf)
+	s.buf = newBuf
+}
+
+func (s *SDS) SubStr(start, size int) {
+	oldLen := len(s.buf)
+	if start < 0 || size < 0 {
+		return
+	}
+
+	if start >= oldLen {
+		start = 0
+		size = 0
+	}
+
+	if size > oldLen-start {
+		size = oldLen - start
+	}
+
+	copy(s.buf, s.buf[start:start+size])
+	s.buf = s.buf[:size]
+}
 
 func (s *SDS) IncrLen(incr int) error {
 	if s.CheckStringLength(incr, len(s.buf)) {
