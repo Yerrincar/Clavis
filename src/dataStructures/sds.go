@@ -2,6 +2,7 @@ package sds
 
 import (
 	"errors"
+	"slices"
 )
 
 type SDS struct {
@@ -21,12 +22,15 @@ func NewSDS(data []byte) (*SDS, error) {
 	if len(data) > MaxStringSize {
 		return nil, ErrStringTooLarge
 	}
-	b := make([]byte, len(data))
-	copy(b, data)
 
-	return &SDS{
-		buf: b,
-	}, nil
+	b := &SDS{
+		buf: data,
+	}
+	if b.Available() > b.Len()/10 {
+		b.RemoveFreeSpace()
+	}
+
+	return b, nil
 }
 
 func (s *SDS) Len() int {
@@ -50,6 +54,10 @@ func (s *SDS) AvailableWritableRegion(maxCap int) ([]byte, error) {
 
 func (s *SDS) Bytes() []byte {
 	return s.buf
+}
+
+func (s *SDS) CloneBytes() []byte {
+	return slices.Clone(s.buf)
 }
 
 func (s *SDS) RemoveFreeSpace() {
