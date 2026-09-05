@@ -3,10 +3,19 @@ package sds
 import (
 	"errors"
 	"slices"
+	"unsafe"
 )
 
 type SDS struct {
 	buf []byte
+}
+
+type SDSMemoryAccounting struct {
+	LogicalSize   int
+	ReservedBytes int
+	UnusedSize    int
+	Metadata      int
+	Total         int
 }
 
 const MaxStringSize = 512 << 20
@@ -15,22 +24,28 @@ const oneMB int = 1 << 20
 var ErrNegativeSize = errors.New("negative size string")
 var ErrStringTooLarge = errors.New("string exceeds maximum allowed size")
 
-func NewSDS(data []byte) (*SDS, error) {
-	if len(data) == 0 {
+func NewSDS(n int) (*SDS, error) {
+	if n == 0 {
 		return &SDS{}, nil
 	}
-	if len(data) > MaxStringSize {
+	if n > MaxStringSize {
 		return nil, ErrStringTooLarge
 	}
 
-	b := &SDS{
-		buf: data,
+	if n < 0 {
+		return nil, ErrNegativeSize
 	}
-	if b.Available() > b.Len()/10 {
-		b.RemoveFreeSpace()
+
+	b := &SDS{
+		buf: make([]byte, 0, n),
 	}
 
 	return b, nil
+}
+func (s *SDS) Take() []byte {
+	out := s.buf
+	s.buf = nil
+	return out
 }
 
 func (s *SDS) Len() int {
@@ -52,7 +67,7 @@ func (s *SDS) AvailableWritableRegion(maxCap int) ([]byte, error) {
 	return nil, errors.New("max cap exceeds available writable bytes")
 }
 
-func (s *SDS) Bytes() []byte {
+func (s *SDS) BorrowBytes() []byte {
 	return s.buf
 }
 
@@ -161,4 +176,26 @@ func (s *SDS) nextCapacity(added, actual int) int {
 
 func (s *SDS) CheckStringLength(data, size int) bool {
 	return data > MaxStringSize-size
+}
+
+func (s *SDS) MemoryAccount() *SDSMemoryAccounting {
+	if s == nil {
+		return &SDSMemoryAccounting{}
+	}
+
+	structSize := unsafe.Sizeof(*s)
+
+	logicalSize := len(s.buf)
+	backingSize := cap(s.buf)
+	unusedSize := backingSize - logicalSize
+
+	totalAccounted := structSize + uintptr(backingSize)
+
+	return &SDSMemoryAccounting{
+		logicalSize:   logicalSize,
+		reservedBytes: backingSize,
+		unusedSize:    unusedSize,
+		metadata:      int(structSize),
+		total:         int(totalAccounted),
+	}
 }
