@@ -192,10 +192,10 @@ func (s *SDS) MemoryAccount() *SDSMemoryAccounting {
 	totalAccounted := structSize + uintptr(backingSize)
 
 	return &SDSMemoryAccounting{
-		logicalSize:   logicalSize,
-		reservedBytes: backingSize,
-		unusedSize:    unusedSize,
-		metadata:      int(structSize),
-		total:         int(totalAccounted),
+		LogicalSize:   logicalSize,
+		ReservedBytes: backingSize,
+		UnusedSize:    unusedSize,
+		Metadata:      int(structSize),
+		Total:         int(totalAccounted),
 	}
 }
