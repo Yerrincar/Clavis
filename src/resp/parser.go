@@ -39,6 +39,7 @@ var (
 	invalidInputSimpleError  = errors.New("Input data is invalid for simple error")
 	invalidInputInteger      = errors.New("Input data is invalid for integer")
 	invalidInputBulk         = errors.New("Input data is invalid for bulks")
+	IncompleteInput          = errors.New("Input data is incomplete, need more bytes")
 )
 
 type DataType struct {
@@ -79,10 +80,11 @@ func (r *RespSVC) handleParsing(dataTypeID byte) func(*DataType) error {
 	case INTEGER:
 		return r.ParseInteger
 	case BULK:
-		return r.ParseBulk
+		//return r.ParseBulkHeaderSDS
 	default:
 		return func(dt *DataType) error { return errors.New("invalid input data") }
 	}
+	return nil
 }
 
 func (r *RespSVC) ParseSimpleString(dataType *DataType) error {
@@ -111,7 +113,6 @@ func (r *RespSVC) ParseSimpleInput(dataType *DataType, invalidError error) error
 }
 
 func (r *RespSVC) ParseInteger(dataType *DataType) error {
-	//reader := bufio.NewReader(bytes.NewReader(dataType.Msg[1:]))
 	var reader *bufio.Reader
 	signByte := dataType.Msg[1]
 	var sign int64 = 1
@@ -162,50 +163,89 @@ func (r *RespSVC) ParseInteger(dataType *DataType) error {
 	dataType.ReturnType = result
 	return nil
 }
-
-func (r *RespSVC) ParseBulk(dataType *DataType) error {
+func (r *RespSVC) ParseBulkHeaderSDS(dataType *DataType) (int, int, error) {
 	size := len(dataType.Msg)
 
-	if size < 4 || size > 512*1024*1024 {
-		return invalidInputBulk
+	if size < 4 {
+		return 0, 0, IncompleteInput
 	}
 
 	startingByte := bytes.IndexByte(dataType.Msg, CR)
 	if startingByte == -1 {
-		return invalidInputBulk
+		return 0, 0, IncompleteInput
 	}
 
 	if startingByte+1 > size-1 || dataType.Msg[startingByte+1] != LF {
-		return invalidInputBulk
+		return 0, 0, invalidInputBulk
 	}
 
 	length, err := strconv.Atoi(string(dataType.Msg[1:startingByte]))
 	if err != nil {
-		return err
+		return 0, 0, err
+	}
+
+	if length > 512<<20 {
+		return 0, 0, errors.New("Length bigger than Max String Size")
 	}
 
 	if length == -1 {
 		dataType.ReturnType = nil
-		return nil
+		return 0, 0, nil
 	}
 
 	if length < -1 {
-		return invalidInputBulk
+		return 0, 0, invalidInputBulk
+	}
+
+	header := startingByte + 2
+
+	return length, header, nil
+}
+
+func (r *RespSVC) ParseBulk(dataType *DataType) (int, error) {
+	size := len(dataType.Msg)
+
+	if size < 4 || size > 512*1024*1024 {
+		return 0, invalidInputBulk
+	}
+
+	startingByte := bytes.IndexByte(dataType.Msg, CR)
+	if startingByte == -1 {
+		return 0, invalidInputBulk
+	}
+
+	if startingByte+1 > size-1 || dataType.Msg[startingByte+1] != LF {
+		return 0, invalidInputBulk
+	}
+
+	length, err := strconv.Atoi(string(dataType.Msg[1:startingByte]))
+	if err != nil {
+		return 0, err
+	}
+
+	if length == -1 {
+		dataType.ReturnType = nil
+		return 0, nil
+	}
+
+	if length < -1 {
+		return 0, invalidInputBulk
 	}
 
 	bulkStart := startingByte + 2
 	bulkEnd := bulkStart + length
 
 	if bulkEnd+2 > size {
-		return invalidInputBulk
+		return 0, invalidInputBulk
 	}
 
 	if string(dataType.Msg[bulkEnd:bulkEnd+2]) != "\r\n" {
-		return invalidInputBulk
+		return 0, invalidInputBulk
 	}
 
 	dataType.ReturnType = dataType.Msg[bulkStart:bulkEnd]
-	return nil
+	totalConsumed := bulkEnd + 2
+	return totalConsumed, nil
 }
 
 func (r *RespSVC) readUntilCRLF(reader *bufio.Reader, handler func(byte) error, invalidError error) error {
