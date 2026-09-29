@@ -66,9 +66,12 @@ func (h *Handler) handleConnection(conn net.Conn) {
 
 				if length == -1 {
 					currentSDS = nil
+					mode = "NORMAL"
+					queryBuff = queryBuff[header:]
 				}
 
 				if length == 0 {
+					currentSDS = &sds.SDS{}
 					queryBuff = queryBuff[header:]
 					mode = "BULK_TRAILER"
 				}
@@ -82,16 +85,18 @@ func (h *Handler) handleConnection(conn net.Conn) {
 
 					available := len(queryBuff) - header
 					payloadBytes := min(length, available)
+					payload := queryBuff[header : header+payloadBytes]
+
+					err = h.CopyBufferedBulkIntoSDS(payload, currentSDS)
+					if err != nil {
+						return
+					}
 
 					received = payloadBytes
 					remaining = length - received
 
 					//small bulk string can also stay in this mode without affecting performance, stablish large bulk treshold
 					queryBuff = queryBuff[header+payloadBytes:]
-					err = h.CopyBufferedBulkIntoSDS(queryBuff, currentSDS)
-					if err != nil {
-						return
-					}
 				}
 
 				if remaining > 0 {

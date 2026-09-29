@@ -63,7 +63,7 @@ func (r *RespSVC) Parse(data []byte) (DataType, error) {
 		Msg:       data,
 	}
 
-	err := r.handleParsing(dataType.FirstByte)(&dataType)
+	_, _, err := r.handleParsing(dataType.FirstByte)(&dataType)
 	if err != nil {
 		return DataType{}, err
 	}
@@ -71,7 +71,7 @@ func (r *RespSVC) Parse(data []byte) (DataType, error) {
 	return DataType{}, nil
 }
 
-func (r *RespSVC) handleParsing(dataTypeID byte) func(*DataType) error {
+func (r *RespSVC) handleParsing(dataTypeID byte) func(*DataType) (int, int, error) {
 	switch dataTypeID {
 	case STRING:
 		return r.ParseSimpleString
@@ -80,22 +80,21 @@ func (r *RespSVC) handleParsing(dataTypeID byte) func(*DataType) error {
 	case INTEGER:
 		return r.ParseInteger
 	case BULK:
-		//return r.ParseBulkHeaderSDS
+		return r.ParseBulkHeaderSDS
 	default:
-		return func(dt *DataType) error { return errors.New("invalid input data") }
+		return func(dt *DataType) (int, int, error) { return 0, 0, errors.New("invalid input data") }
 	}
-	return nil
 }
 
-func (r *RespSVC) ParseSimpleString(dataType *DataType) error {
+func (r *RespSVC) ParseSimpleString(dataType *DataType) (int, int, error) {
 	return r.ParseSimpleInput(dataType, invalidInputSimpleString)
 }
 
-func (r *RespSVC) ParseSimpleError(dataType *DataType) error {
+func (r *RespSVC) ParseSimpleError(dataType *DataType) (int, int, error) {
 	return r.ParseSimpleInput(dataType, invalidInputSimpleError)
 }
 
-func (r *RespSVC) ParseSimpleInput(dataType *DataType, invalidError error) error {
+func (r *RespSVC) ParseSimpleInput(dataType *DataType, invalidError error) (int, int, error) {
 	reader := bufio.NewReader(bytes.NewReader(dataType.Msg[1:]))
 	var res strings.Builder
 
@@ -105,14 +104,14 @@ func (r *RespSVC) ParseSimpleInput(dataType *DataType, invalidError error) error
 	}, invalidError)
 
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 
 	dataType.ReturnType = res.String()
-	return nil
+	return 0, 0, nil
 }
 
-func (r *RespSVC) ParseInteger(dataType *DataType) error {
+func (r *RespSVC) ParseInteger(dataType *DataType) (int, int, error) {
 	var reader *bufio.Reader
 	signByte := dataType.Msg[1]
 	var sign int64 = 1
@@ -153,15 +152,15 @@ func (r *RespSVC) ParseInteger(dataType *DataType) error {
 	}, invalidInputInteger)
 
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 
 	if !foundDigit {
-		return invalidInputInteger
+		return 0, 0, invalidInputInteger
 	}
 
 	dataType.ReturnType = result
-	return nil
+	return 0, 0, nil
 }
 func (r *RespSVC) ParseBulkHeaderSDS(dataType *DataType) (int, int, error) {
 	size := len(dataType.Msg)
@@ -190,7 +189,7 @@ func (r *RespSVC) ParseBulkHeaderSDS(dataType *DataType) (int, int, error) {
 
 	if length == -1 {
 		dataType.ReturnType = nil
-		return 0, 0, nil
+		return -1, startingByte, nil
 	}
 
 	if length < -1 {
