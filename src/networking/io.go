@@ -21,19 +21,6 @@ func ReadConn(r io.Reader, data []byte) (int, error) {
 	return 0, nil
 }
 
-//func (h *Handler) ReadIntoQueryBuffer(r io.Reader, data []byte, n int, sds *sds.SDS) error {
-//	h.sds.MakeRoomFor(n)
-//
-//	bytesWritten, err := ReadConn(r, data)
-//	if err != nil {
-//		return err
-//	}
-//
-//	h.sds.IncrLen(bytesWritten)
-//
-//	return nil
-//}
-
 func (h *Handler) ReadIntoBulkSDS(r io.Reader, sds *sds.SDS, n int) (int, error) {
 	availableRegion, err := sds.AvailableWritableRegion(n)
 	if err != nil {
