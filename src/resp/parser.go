@@ -1,9 +1,11 @@
 package resp
 
 import (
+	sds "Clavis/src/dataStructures"
 	"bufio"
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"strconv"
@@ -42,6 +44,8 @@ var (
 	invalidInputArray        = errors.New("Input data is invalid for array")
 	invalidInputError        = errors.New("Input data is invalid")
 	IncompleteInput          = errors.New("Input data is incomplete, need more bytes")
+	bulkTrailer              = []byte("\r\n")
+	nullBulkString           = []byte("$-1\r\n")
 )
 
 type DataType struct {
@@ -307,4 +311,67 @@ func isKnownType(b byte) bool {
 	default:
 		return false
 	}
+}
+
+func (r *RespSVC) SerializeSimpleString(message string) ([]byte, error) {
+	if message == "" {
+		return nil, invalidInputSimpleError
+	}
+
+	if strings.Contains(message, "\r") || strings.Contains(message, "\n") {
+		return nil, invalidInputSimpleString
+	}
+
+	response := make([]byte, 0, len(message)+3)
+	response = append(response, STRING)
+	response = append(response, message...)
+	return append(response, CR, LF), nil
+}
+
+func (r *RespSVC) SerializeSimpleError(message string) ([]byte, error) {
+	if message == "" {
+		return nil, invalidInputSimpleError
+	}
+
+	if strings.Contains(message, "\r") || strings.Contains(message, "\n") {
+		return nil, invalidInputSimpleError
+	}
+
+	response := make([]byte, 0, len(message)+3)
+	response = append(response, ERROR)
+	response = append(response, message...)
+	return append(response, CR, LF), nil
+}
+
+func (r *RespSVC) SerializeInteger(resp DataType) (string, error) {
+	if resp.ReturnType == nil {
+		return "", invalidInputInteger
+	}
+
+	var num int64
+	switch v := resp.ReturnType.(type) {
+	case int64:
+		num = v
+	default:
+		return "", invalidInputInteger
+	}
+
+	return fmt.Sprintf(":%d\r\n", num), nil
+}
+
+func (r *RespSVC) SerializeBulkString(value *sds.SDS) ([][]byte, error) {
+	if value == nil {
+		return [][]byte{nullBulkString}, nil
+	}
+
+	if value.Len() > 512*1024*1024 {
+		return nil, invalidInputBulk
+	}
+
+	header := make([]byte, 0, 16)
+	header = append(header, BULK)
+	header = strconv.AppendInt(header, int64(value.Len()), 10)
+	header = append(header, CR, LF)
+
+	return [][]byte{header, value.BorrowBytes(), bulkTrailer}, nil
 }

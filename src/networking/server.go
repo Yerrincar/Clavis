@@ -1,6 +1,7 @@
 package networking
 
 import (
+	"Clavis/src/command"
 	sds "Clavis/src/dataStructures"
 	"Clavis/src/resp"
 	"errors"
@@ -39,9 +40,9 @@ func NewArrayParseState() *arrayParseState {
 	}
 }
 
-func (h *Handler) server() error {
+func (h *Handler) Server() error {
 
-	listener, err := net.Listen("tcp", ":8090")
+	listener, err := net.Listen("tcp", ":8000")
 	if err != nil {
 		return err
 	}
@@ -56,6 +57,31 @@ func (h *Handler) server() error {
 		}
 
 		go h.handleConnection(conn)
+	}
+}
+
+func (h *Handler) writeReply(conn net.Conn, reply *command.Reply) error {
+	switch reply.Type {
+	case command.TypeError:
+		response, err := h.resp.SerializeSimpleError(reply.Err.Error())
+		if err != nil {
+			return err
+		}
+		return WriteAll(conn, [][]byte{response})
+	case command.TypeStatus:
+		response, err := h.resp.SerializeSimpleString(reply.String)
+		if err != nil {
+			return err
+		}
+		return WriteAll(conn, [][]byte{response})
+	case command.TypeBulk, command.TypeNull:
+		response, err := h.resp.SerializeBulkString(reply.Bytes)
+		if err != nil {
+			return err
+		}
+		return WriteAll(conn, response)
+	default:
+		return errors.New("unsupported reply type")
 	}
 }
 
@@ -74,6 +100,16 @@ func (h *Handler) handleConnection(conn net.Conn) {
 			err = h.parseBulk(conn, &queryBuff, readTmp, bulkState, arrayState)
 		case arrayState.active && arrayState.completed == arrayState.expected:
 			arrayState.completeCommand()
+			for len(arrayState.commands) > 0 {
+				currentCommand := arrayState.commands[0]
+				reply := h.dispatch.Execute(currentCommand)
+				if err := h.writeReply(conn, reply); err != nil {
+					return
+				}
+				arrayState.commands[0] = nil
+				arrayState.commands = arrayState.commands[1:]
+
+			}
 			continue
 		default:
 			if len(queryBuff) == 0 {

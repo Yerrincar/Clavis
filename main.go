@@ -1,9 +1,16 @@
 package main
 
 import (
-	"fmt"
+	"Clavis/src/networking"
+	"log"
 )
 
 func main() {
-	fmt.Println("Clavis")
+	handler := networking.NewHandler()
+
+	err := handler.Server()
+	if err != nil {
+		log.Fatal(err)
+	}
+
 }

@@ -21,6 +21,23 @@ func ReadConn(r io.Reader, data []byte) (int, error) {
 	return 0, nil
 }
 
+func WriteAll(w io.Writer, parts [][]byte) error {
+	for _, part := range parts {
+		for len(part) > 0 {
+			n, err := w.Write(part)
+			if err != nil {
+				return err
+			}
+			if n == 0 {
+				return io.ErrShortWrite
+			}
+			part = part[n:]
+		}
+	}
+
+	return nil
+}
+
 func (h *Handler) ReadIntoBulkSDS(r io.Reader, sds *sds.SDS, n int) (int, error) {
 	availableRegion, err := sds.AvailableWritableRegion(n)
 	if err != nil {
