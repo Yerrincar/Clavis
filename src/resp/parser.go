@@ -202,7 +202,7 @@ func (r *RespSVC) ParseBulkHeaderSDS(dataType *DataType) (int, int, error) {
 
 	length, err := strconv.Atoi(string(dataType.Msg[1:startingByte]))
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, invalidInputBulk
 	}
 
 	if length > 512<<20 {
@@ -246,7 +246,11 @@ func (r *RespSVC) ParseArray(dataType *DataType, pos int) (int, int, error) {
 
 	numberArr, err := strconv.Atoi(string(dataType.Msg[pos+1 : pos+startingByte]))
 	if err != nil {
-		return pos, 0, err
+		return pos, 0, invalidInputArray
+	}
+
+	if numberArr > 512<<20 {
+		return 0, 0, errors.New("Number of arguments bigger than Max String Size")
 	}
 
 	if numberArr == -1 {

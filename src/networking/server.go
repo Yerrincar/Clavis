@@ -11,6 +11,23 @@ import (
 
 var NullBulkString = errors.New("Null Bulk String returned")
 
+type protocolError struct {
+	cause error
+}
+
+func (e *protocolError) Error() string {
+	return "Protocol error: " + e.cause.Error()
+}
+
+func newProtocolError(err error) error {
+	return &protocolError{cause: err}
+}
+
+func isProtocolError(err error) bool {
+	var target *protocolError
+	return errors.As(err, &target)
+}
+
 type bulkParseState struct {
 	active     bool
 	expected   int
@@ -63,7 +80,7 @@ func (h *Handler) Server() error {
 func (h *Handler) writeReply(conn net.Conn, reply *command.Reply) error {
 	switch reply.Type {
 	case command.TypeError:
-		response, err := h.resp.SerializeSimpleError(reply.Err.Error())
+		response, err := h.resp.SerializeSimpleError("ERR " + reply.Err.Error())
 		if err != nil {
 			return err
 		}
@@ -131,6 +148,9 @@ func (h *Handler) handleConnection(conn net.Conn) {
 			continue
 		}
 		if err != nil {
+			if isProtocolError(err) {
+				_ = h.writeReply(conn, &command.Reply{Type: command.TypeError, Err: err})
+			}
 			return
 		}
 	}
@@ -151,20 +171,20 @@ func (h *Handler) parseElement(conn net.Conn, queryBuff *[]byte, readTmp []byte,
 		return resp.IncompleteInput
 	}
 	if err != nil {
-		return err
+		return newProtocolError(err)
 	}
 
 	if !arrayState.active {
 		if dataType.FirstByte != resp.ARRAY {
-			return errors.New("commands must be RESP arrays")
+			return newProtocolError(errors.New("commands must be RESP arrays"))
 		}
 
 		numberArg, header, err := h.resp.ParseArray(&dataType, 0)
 		if err != nil {
-			return err
+			return newProtocolError(err)
 		}
 		if numberArg < 0 {
-			return errors.New("commands cannot be null arrays")
+			return newProtocolError(errors.New("commands cannot be null arrays"))
 		}
 
 		arrayState.active = true
@@ -176,12 +196,12 @@ func (h *Handler) parseElement(conn net.Conn, queryBuff *[]byte, readTmp []byte,
 	}
 
 	if dataType.FirstByte != resp.BULK {
-		return errors.New("command arguments must be bulk strings")
+		return newProtocolError(errors.New("command arguments must be bulk strings"))
 	}
 
 	length, header, err := h.resp.ParseBulkHeaderSDS(&dataType)
 	if err != nil {
-		return err
+		return newProtocolError(err)
 	}
 
 	err = h.consumeHeader(queryBuff, length, header, bulkState)
@@ -191,7 +211,7 @@ func (h *Handler) parseElement(conn net.Conn, queryBuff *[]byte, readTmp []byte,
 		return nil
 	}
 	if err != nil {
-		return err
+		return newProtocolError(err)
 	}
 
 	return h.parseBulk(conn, queryBuff, readTmp, bulkState, arrayState)
@@ -228,8 +248,7 @@ func (h *Handler) parseBulk(conn net.Conn, queryBuff *[]byte, readTmp []byte, bu
 			}
 
 			if (*queryBuff)[0] != '\r' || (*queryBuff)[1] != '\n' {
-				log.Print(errors.New("Invalid input"))
-				return errors.New("invalid input")
+				return newProtocolError(errors.New("invalid bulk string trailer"))
 			}
 
 			*queryBuff = (*queryBuff)[2:]

@@ -27,7 +27,10 @@ type Reply struct {
 	Err    error
 }
 
-var EmptyArgs = errors.New("Empty arguments in command")
+var (
+	EmptyArgs = errors.New("empty command")
+	NullArgs  = errors.New("null command arguments are not supported")
+)
 
 type Service struct {
 	store *store.Store
@@ -41,7 +44,13 @@ func NewService() *Service {
 
 func (s *Service) Execute(args []*sds.SDS) *Reply {
 	if len(args) == 0 {
-		return nil
+		return &Reply{Type: TypeError, Err: EmptyArgs}
+	}
+
+	for _, arg := range args {
+		if arg == nil {
+			return &Reply{Type: TypeError, Err: NullArgs}
+		}
 	}
 
 	cmd := args[0].BorrowBytes()
@@ -53,6 +62,9 @@ func (s *Service) Execute(args []*sds.SDS) *Reply {
 		}
 
 		key := string(args[1].BorrowBytes())
+		if key == "" {
+			return &Reply{Type: TypeError, Err: errors.New("no key found for that argument")}
+		}
 		value := args[2]
 
 		err := s.store.Set(key, value)
@@ -68,6 +80,9 @@ func (s *Service) Execute(args []*sds.SDS) *Reply {
 		}
 
 		key := string(args[1].BorrowBytes())
+		if key == "" {
+			return &Reply{Type: TypeError, Err: errors.New("no key found for that argument")}
+		}
 		result, exist := s.store.Get(key)
 		if !exist {
 			return &Reply{Type: TypeNull, Bytes: nil}
