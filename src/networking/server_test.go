@@ -29,6 +29,19 @@ func TestParseElementWaitsForFirstArrayElement(t *testing.T) {
 	}
 }
 
+func TestConsumeHeaderRejectsOversizedBulk(t *testing.T) {
+	queryBuffer := []byte("$268435457\r\n")
+	bulkState := NewBulkParseState()
+
+	err := (&Handler{}).consumeHeader(&queryBuffer, MaxBulkRequestBytes+1, len(queryBuffer), bulkState)
+	if !errors.Is(err, ErrBulkRequestTooLarge) {
+		t.Fatalf("consumeHeader() error = %v, want %v", err, ErrBulkRequestTooLarge)
+	}
+	if bulkState.currentSDS != nil {
+		t.Fatal("consumeHeader() allocated an oversized Bulk String")
+	}
+}
+
 func TestParseBulkCompletesSplitTrailer(t *testing.T) {
 	payload, err := sds.NewSDS(3)
 	if err != nil {
@@ -168,6 +181,18 @@ func TestHandleConnectionRejectsMalformedRequests(t *testing.T) {
 			name:             "invalid bulk length",
 			request:          "*1\r\n$x\r\n",
 			response:         "-ERR Protocol error: Input data is invalid for bulks\r\n",
+			closesConnection: true,
+		},
+		{
+			name:             "too many command arguments",
+			request:          "*1025\r\n",
+			response:         "-ERR Protocol error: exceeded max arguments limit\r\n",
+			closesConnection: true,
+		},
+		{
+			name:             "command exceeds byte limit",
+			request:          "*1\r\n$268435457\r\n",
+			response:         "-ERR Protocol error: exceeded max command bytes limit\r\n",
 			closesConnection: true,
 		},
 		{

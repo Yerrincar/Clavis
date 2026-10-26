@@ -7,9 +7,15 @@ import (
 	"errors"
 	"log"
 	"net"
+	"time"
 )
 
 var NullBulkString = errors.New("Null Bulk String returned")
+var ErrBulkRequestTooLarge = errors.New("exceeded max limit of requested bytes")
+
+const MaxCommandArguments = 1024
+const MaxBulkRequestBytes = 256 << 20
+const MaxCommandBytes = 256 << 20
 
 type protocolError struct {
 	cause error
@@ -38,11 +44,12 @@ type bulkParseState struct {
 }
 
 type arrayParseState struct {
-	active    bool
-	expected  int
-	completed int
-	arguments []*sds.SDS
-	commands  [][]*sds.SDS
+	active       bool
+	expected     int
+	completed    int
+	arguments    []*sds.SDS
+	commands     [][]*sds.SDS
+	commandBytes int
 }
 
 func NewBulkParseState() *bulkParseState {
@@ -130,6 +137,10 @@ func (h *Handler) handleConnection(conn net.Conn) {
 			continue
 		default:
 			if len(queryBuff) == 0 {
+				err = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+				if err != nil {
+					return
+				}
 				n, err := conn.Read(readTmp)
 				if err != nil {
 					return
@@ -140,6 +151,10 @@ func (h *Handler) handleConnection(conn net.Conn) {
 		}
 
 		if err == resp.IncompleteInput {
+			err = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+			if err != nil {
+				return
+			}
 			n, err := conn.Read(readTmp)
 			if err != nil {
 				return
@@ -162,6 +177,7 @@ func (s *arrayParseState) completeCommand() {
 	s.expected = 0
 	s.completed = 0
 	s.arguments = nil
+	s.commandBytes = 0
 }
 
 func (h *Handler) parseElement(conn net.Conn, queryBuff *[]byte, readTmp []byte, bulkState *bulkParseState, arrayState *arrayParseState) error {
@@ -187,6 +203,10 @@ func (h *Handler) parseElement(conn net.Conn, queryBuff *[]byte, readTmp []byte,
 			return newProtocolError(errors.New("commands cannot be null arrays"))
 		}
 
+		if numberArg > MaxCommandArguments {
+			return newProtocolError(errors.New("exceeded max arguments limit"))
+		}
+
 		arrayState.active = true
 		arrayState.expected = numberArg
 		arrayState.completed = 0
@@ -204,6 +224,11 @@ func (h *Handler) parseElement(conn net.Conn, queryBuff *[]byte, readTmp []byte,
 		return newProtocolError(err)
 	}
 
+	if length > MaxCommandBytes-arrayState.commandBytes {
+		return newProtocolError(errors.New("exceeded max command bytes limit"))
+	}
+	arrayState.commandBytes += length
+
 	err = h.consumeHeader(queryBuff, length, header, bulkState)
 	if err == NullBulkString {
 		arrayState.arguments = append(arrayState.arguments, nil)
@@ -220,6 +245,10 @@ func (h *Handler) parseBulk(conn net.Conn, queryBuff *[]byte, readTmp []byte, bu
 	for {
 		if bulkState.mode == "BULK_BODY" {
 			if bulkState.received < bulkState.expected {
+				err := conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+				if err != nil {
+					return err
+				}
 				bytesReceived, err := h.ReadIntoBulkSDS(
 					conn,
 					bulkState.currentSDS,
@@ -240,6 +269,10 @@ func (h *Handler) parseBulk(conn net.Conn, queryBuff *[]byte, readTmp []byte, bu
 		if bulkState.mode == "BULK_TRAILER" {
 			for len(*queryBuff) < 2 {
 				tmp := make([]byte, 1)
+				err := conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+				if err != nil {
+					return err
+				}
 				n, err := conn.Read(tmp)
 				if err != nil {
 					return err
@@ -270,6 +303,10 @@ func (h *Handler) consumeHeader(queryBuff *[]byte, length int, header int, bulkS
 	if length == -1 {
 		*queryBuff = (*queryBuff)[header:]
 		return NullBulkString
+	}
+
+	if length > MaxBulkRequestBytes {
+		return ErrBulkRequestTooLarge
 	}
 
 	if length == 0 {
