@@ -11,6 +11,7 @@ type ReplyType int
 
 const (
 	TypeStatus ReplyType = iota
+	TypeString
 	TypeError
 	TypeInt
 	TypeBulk
@@ -89,6 +90,56 @@ func (s *Service) Execute(args []*sds.SDS) *Reply {
 		}
 
 		return &Reply{Type: TypeBulk, Bytes: result}
+
+	case bytes.Equal(cmd, []byte("DEL")):
+		if len(args) == 1 {
+			return &Reply{Type: TypeError, Err: errors.New("wrong number of arguments for 'del' command")}
+		}
+		keys := make([]string, 0)
+
+		for _, key := range args[1:] {
+			keys = append(keys, string(key.BorrowBytes()))
+		}
+		deletedKeys := s.store.Del(keys)
+		return &Reply{Type: TypeInt, Num: int64(deletedKeys)}
+
+	case bytes.Equal(cmd, []byte("EXISTS")):
+		if len(args) == 1 {
+			return &Reply{Type: TypeError, Err: errors.New("wrong number of arguments for 'exists' command")}
+		}
+		keys := make([]string, 0)
+
+		for _, key := range args[1:] {
+			keys = append(keys, string(key.BorrowBytes()))
+		}
+		existingKeys := s.store.Exists(keys)
+		return &Reply{Type: TypeInt, Num: int64(existingKeys)}
+
+	case bytes.Equal(cmd, []byte("STRLEN")):
+		if len(args) == 1 {
+			return &Reply{Type: TypeError, Err: errors.New("wrong number of arguments for 'strlen' command")}
+		}
+
+		key := string(args[1].BorrowBytes())
+
+		length := s.store.Strlen(key)
+		return &Reply{Type: TypeInt, Num: int64(length)}
+
+	case bytes.Equal(cmd, []byte("PING")):
+		if len(args) > 2 {
+			return &Reply{Type: TypeError, Err: errors.New("wrong number of arguments for 'ping' command")}
+		}
+		var value []byte
+		if len(args) == 2 {
+			value = args[1].BorrowBytes()
+		}
+
+		message, err := s.store.Ping(value)
+		if err != nil {
+			return &Reply{Type: TypeError, Err: errors.New("error trying to ping server")}
+		}
+
+		return &Reply{Type: TypeString, String: string(message)}
 
 	default:
 		return &Reply{Type: TypeError,

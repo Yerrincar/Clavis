@@ -5,7 +5,6 @@ import (
 	"bufio"
 	"bytes"
 	"errors"
-	"fmt"
 	"io"
 	"math"
 	"strconv"
@@ -347,20 +346,11 @@ func (r *RespSVC) SerializeSimpleError(message string) ([]byte, error) {
 	return append(response, CR, LF), nil
 }
 
-func (r *RespSVC) SerializeInteger(resp DataType) (string, error) {
-	if resp.ReturnType == nil {
-		return "", invalidInputInteger
-	}
-
-	var num int64
-	switch v := resp.ReturnType.(type) {
-	case int64:
-		num = v
-	default:
-		return "", invalidInputInteger
-	}
-
-	return fmt.Sprintf(":%d\r\n", num), nil
+func (r *RespSVC) SerializeInteger(value int64) []byte {
+	response := make([]byte, 0, 23)
+	response = append(response, INTEGER)
+	response = strconv.AppendInt(response, value, 10)
+	return append(response, CR, LF)
 }
 
 func (r *RespSVC) SerializeBulkString(value *sds.SDS) ([][]byte, error) {
