@@ -92,12 +92,6 @@ func (h *Handler) writeReply(conn net.Conn, reply *command.Reply) error {
 			return err
 		}
 		return WriteAll(conn, [][]byte{response})
-	case command.TypeString:
-		response, err := h.resp.SerializeSimpleString(reply.String)
-		if err != nil {
-			return err
-		}
-		return WriteAll(conn, [][]byte{response})
 	case command.TypeInt:
 		response := h.resp.SerializeInteger(reply.Num)
 		return WriteAll(conn, [][]byte{response})

@@ -116,7 +116,7 @@ func (s *Service) Execute(args []*sds.SDS) *Reply {
 		return &Reply{Type: TypeInt, Num: int64(existingKeys)}
 
 	case bytes.Equal(cmd, []byte("STRLEN")):
-		if len(args) == 1 {
+		if len(args) != 2 {
 			return &Reply{Type: TypeError, Err: errors.New("wrong number of arguments for 'strlen' command")}
 		}
 
@@ -125,21 +125,57 @@ func (s *Service) Execute(args []*sds.SDS) *Reply {
 		length := s.store.Strlen(key)
 		return &Reply{Type: TypeInt, Num: int64(length)}
 
+	case bytes.Equal(cmd, []byte("APPEND")):
+		if len(args) != 3 {
+			return &Reply{Type: TypeError, Err: errors.New("wrong number of arguments for 'append' command")}
+		}
+
+		key := string(args[1].BorrowBytes())
+
+		added, err := s.store.Append(key, args[2].BorrowBytes())
+		if err != nil {
+			return &Reply{Type: TypeError, Err: err}
+		}
+
+		return &Reply{Type: TypeInt, Num: int64(added)}
+
+	case bytes.Equal(cmd, []byte("INCR")):
+		if len(args) != 2 {
+			return &Reply{Type: TypeError, Err: errors.New("wrong number of arguments for 'incr' command")}
+		}
+
+		key := string(args[1].BorrowBytes())
+
+		value, err := s.store.Incr(key)
+		if err != nil {
+			return &Reply{Type: TypeError, Err: err}
+		}
+
+		return &Reply{Type: TypeInt, Num: value}
+
+	case bytes.Equal(cmd, []byte("DECR")):
+		if len(args) != 2 {
+			return &Reply{Type: TypeError, Err: errors.New("wrong number of arguments for 'decr' command")}
+		}
+
+		key := string(args[1].BorrowBytes())
+
+		value, err := s.store.Decr(key)
+		if err != nil {
+			return &Reply{Type: TypeError, Err: err}
+		}
+
+		return &Reply{Type: TypeInt, Num: value}
+
 	case bytes.Equal(cmd, []byte("PING")):
-		if len(args) > 2 {
+		switch len(args) {
+		case 1:
+			return &Reply{Type: TypeStatus, String: "PONG"}
+		case 2:
+			return &Reply{Type: TypeBulk, Bytes: args[1]}
+		default:
 			return &Reply{Type: TypeError, Err: errors.New("wrong number of arguments for 'ping' command")}
 		}
-		var value []byte
-		if len(args) == 2 {
-			value = args[1].BorrowBytes()
-		}
-
-		message, err := s.store.Ping(value)
-		if err != nil {
-			return &Reply{Type: TypeError, Err: errors.New("error trying to ping server")}
-		}
-
-		return &Reply{Type: TypeString, String: string(message)}
 
 	default:
 		return &Reply{Type: TypeError,

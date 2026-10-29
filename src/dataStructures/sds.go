@@ -42,6 +42,19 @@ func NewSDS(n int) (*SDS, error) {
 
 	return b, nil
 }
+
+func NewSDSFromBytes(data []byte) (*SDS, error) {
+	s, err := NewSDS(len(data))
+	if err != nil {
+		return nil, err
+	}
+	if err := s.Append(data); err != nil {
+		return nil, err
+	}
+
+	return s, nil
+}
+
 func (s *SDS) Take() []byte {
 	out := s.buf
 	s.buf = nil
@@ -58,6 +71,39 @@ func (s *SDS) Cap() int {
 
 func (s *SDS) Available() int {
 	return cap(s.buf) - len(s.buf)
+}
+
+func (s *SDS) Append(data []byte) error {
+	err := s.MakeRoomFor(len(data))
+	if err != nil {
+		return err
+	}
+
+	region, err := s.AvailableWritableRegion(len(data))
+	if err != nil {
+		return err
+	}
+
+	copy(region, data)
+
+	err = s.IncrLen(len(data))
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (s *SDS) Set(data []byte) error {
+	if len(data) > s.Len() {
+		if err := s.MakeRoomFor(len(data) - s.Len()); err != nil {
+			return err
+		}
+	}
+
+	s.buf = s.buf[:len(data)]
+	copy(s.buf, data)
+	return nil
 }
 
 func (s *SDS) AvailableWritableRegion(maxCap int) ([]byte, error) {
