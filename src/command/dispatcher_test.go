@@ -35,3 +35,16 @@ func TestExecuteRejectsWrongGetArity(t *testing.T) {
 		t.Fatalf("Execute() error = %q, want %q", got, want)
 	}
 }
+
+func TestExecutePingReplies(t *testing.T) {
+	service := NewService()
+
+	if reply := service.Execute([]*sds.SDS{commandSDS(t, "PING")}); reply.Type != TypeStatus || reply.String != "PONG" {
+		t.Fatalf("PING reply = %#v, want PONG status", reply)
+	}
+
+	message := commandSDS(t, "hello")
+	if reply := service.Execute([]*sds.SDS{commandSDS(t, "PING"), message}); reply.Type != TypeBulk || string(reply.Bytes.BorrowBytes()) != "hello" {
+		t.Fatalf("PING message reply = %#v, want hello Bulk String", reply)
+	}
+}

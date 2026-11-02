@@ -68,7 +68,7 @@ func (s *Service) Execute(args []*sds.SDS) *Reply {
 		}
 		value := args[2]
 
-		err := s.store.Set(key, value)
+		err := s.store.Set(key, value.BorrowBytes())
 		if err != nil {
 			return &Reply{Type: TypeError, Err: err}
 		}

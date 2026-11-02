@@ -24,16 +24,21 @@ func NewStore() *Store {
 	}
 }
 
-func (s *Store) Set(key string, value *sds.SDS) error {
+func (s *Store) Set(key string, value []byte) error {
 
-	if value.Len() > MaxStringSize {
+	if len(value) > MaxStringSize {
 		return ErrStringTooLarge
+	}
+
+	newSDS, err := sds.NewSDSFromBytes(value)
+	if err != nil {
+		return err
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.data[key] = value
+	s.data[key] = newSDS
 
 	return nil
 }
