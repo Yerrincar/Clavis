@@ -8,7 +8,7 @@ import (
 
 func TestCacheGetReturnsCopy(t *testing.T) {
 	backend := store.NewStore()
-	if err := backend.Set("key", []byte("value")); err != nil {
+	if err := backend.Set("key", []byte("value"), 0); err != nil {
 		t.Fatalf("Set() error = %v", err)
 	}
 	cache := Cache{store: backend}

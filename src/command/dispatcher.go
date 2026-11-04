@@ -5,6 +5,7 @@ import (
 	"Clavis/src/store"
 	"bytes"
 	"errors"
+	"time"
 )
 
 type ReplyType int
@@ -34,12 +35,12 @@ var (
 )
 
 type Service struct {
-	store *store.Store
+	Store *store.Store
 }
 
 func NewService() *Service {
 	return &Service{
-		store: store.NewStore(),
+		Store: store.NewStore(),
 	}
 }
 
@@ -58,7 +59,7 @@ func (s *Service) Execute(args []*sds.SDS) *Reply {
 
 	switch {
 	case bytes.Equal(cmd, []byte("SET")):
-		if len(args) != 3 {
+		if len(args) < 3 || len(args) > 4 {
 			return &Reply{Type: TypeError, Err: errors.New("wrong number of arguments for 'set' command")}
 		}
 
@@ -68,7 +69,16 @@ func (s *Service) Execute(args []*sds.SDS) *Reply {
 		}
 		value := args[2]
 
-		err := s.store.Set(key, value.BorrowBytes())
+		var ttl time.Duration
+		if len(args) == 4 {
+			ttlValue, err := time.ParseDuration(string(args[3].BorrowBytes()))
+			if err != nil {
+				return &Reply{Type: TypeError, Err: err}
+			}
+			ttl = ttlValue
+		}
+
+		err := s.Store.Set(key, value.BorrowBytes(), ttl)
 		if err != nil {
 			return &Reply{Type: TypeError, Err: err}
 		}
@@ -84,7 +94,7 @@ func (s *Service) Execute(args []*sds.SDS) *Reply {
 		if key == "" {
 			return &Reply{Type: TypeError, Err: errors.New("no key found for that argument")}
 		}
-		result, exist := s.store.Get(key)
+		result, exist := s.Store.Get(key)
 		if !exist {
 			return &Reply{Type: TypeNull, Bytes: nil}
 		}
@@ -100,7 +110,7 @@ func (s *Service) Execute(args []*sds.SDS) *Reply {
 		for _, key := range args[1:] {
 			keys = append(keys, string(key.BorrowBytes()))
 		}
-		deletedKeys := s.store.Del(keys)
+		deletedKeys := s.Store.Del(keys)
 		return &Reply{Type: TypeInt, Num: int64(deletedKeys)}
 
 	case bytes.Equal(cmd, []byte("EXISTS")):
@@ -112,7 +122,7 @@ func (s *Service) Execute(args []*sds.SDS) *Reply {
 		for _, key := range args[1:] {
 			keys = append(keys, string(key.BorrowBytes()))
 		}
-		existingKeys := s.store.Exists(keys)
+		existingKeys := s.Store.Exists(keys)
 		return &Reply{Type: TypeInt, Num: int64(existingKeys)}
 
 	case bytes.Equal(cmd, []byte("STRLEN")):
@@ -122,7 +132,7 @@ func (s *Service) Execute(args []*sds.SDS) *Reply {
 
 		key := string(args[1].BorrowBytes())
 
-		length := s.store.Strlen(key)
+		length := s.Store.Strlen(key)
 		return &Reply{Type: TypeInt, Num: int64(length)}
 
 	case bytes.Equal(cmd, []byte("APPEND")):
@@ -132,7 +142,7 @@ func (s *Service) Execute(args []*sds.SDS) *Reply {
 
 		key := string(args[1].BorrowBytes())
 
-		added, err := s.store.Append(key, args[2].BorrowBytes())
+		added, err := s.Store.Append(key, args[2].BorrowBytes())
 		if err != nil {
 			return &Reply{Type: TypeError, Err: err}
 		}
@@ -146,7 +156,7 @@ func (s *Service) Execute(args []*sds.SDS) *Reply {
 
 		key := string(args[1].BorrowBytes())
 
-		value, err := s.store.Incr(key)
+		value, err := s.Store.Incr(key)
 		if err != nil {
 			return &Reply{Type: TypeError, Err: err}
 		}
@@ -160,7 +170,7 @@ func (s *Service) Execute(args []*sds.SDS) *Reply {
 
 		key := string(args[1].BorrowBytes())
 
-		value, err := s.store.Decr(key)
+		value, err := s.Store.Decr(key)
 		if err != nil {
 			return &Reply{Type: TypeError, Err: err}
 		}

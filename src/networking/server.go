@@ -129,7 +129,7 @@ func (h *Handler) handleConnection(conn net.Conn) {
 			arrayState.completeCommand()
 			for len(arrayState.commands) > 0 {
 				currentCommand := arrayState.commands[0]
-				reply := h.dispatch.Execute(currentCommand)
+				reply := h.Dispatch.Execute(currentCommand)
 				if err := h.writeReply(conn, reply); err != nil {
 					return
 				}

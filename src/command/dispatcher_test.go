@@ -48,3 +48,16 @@ func TestExecutePingReplies(t *testing.T) {
 		t.Fatalf("PING message reply = %#v, want hello Bulk String", reply)
 	}
 }
+
+func TestExecuteSetAcceptsOptionalTTL(t *testing.T) {
+	service := NewService()
+
+	for _, command := range [][]*sds.SDS{
+		{commandSDS(t, "SET"), commandSDS(t, "persistent"), commandSDS(t, "value")},
+		{commandSDS(t, "SET"), commandSDS(t, "temporary"), commandSDS(t, "value"), commandSDS(t, "1h")},
+	} {
+		if reply := service.Execute(command); reply.Type != TypeStatus || reply.String != "OK" {
+			t.Fatalf("SET reply = %#v, want OK status", reply)
+		}
+	}
+}

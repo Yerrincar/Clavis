@@ -1,6 +1,9 @@
 package api
 
-import "Clavis/src/store"
+import (
+	"Clavis/src/store"
+	"time"
+)
 
 type Cache struct {
 	store *store.Store
@@ -19,11 +22,16 @@ func (c *Cache) Get(key string) ([]byte, bool) {
 	return value.CloneBytes(), true
 }
 
-func (c *Cache) Set(key string, value []byte) error {
-	err := c.store.Set(key, value)
+func (c *Cache) Set(key string, value []byte, ttl time.Duration) error {
+	err := c.store.Set(key, value, ttl)
 	if err != nil {
 		return err
 	}
 
 	return nil
+}
+
+func (c *Cache) Del(key ...string) int {
+	keysDel := c.store.Del(key)
+	return keysDel
 }

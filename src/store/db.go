@@ -2,10 +2,12 @@ package store
 
 import (
 	sds "Clavis/src/dataStructures"
+	"context"
 	"errors"
 	"math"
 	"strconv"
 	"sync"
+	"time"
 )
 
 const MaxStringSize = 512 << 20
@@ -14,17 +16,19 @@ var ErrStringTooLarge = errors.New("string exceeds maximum allowed size")
 var ErrInvalidInteger = errors.New("value is not an integer or out of range")
 
 type Store struct {
-	mu   sync.RWMutex
-	data map[string]*sds.SDS
+	mu     sync.RWMutex
+	data   map[string]*sds.SDS
+	expire *Expire
 }
 
 func NewStore() *Store {
 	return &Store{
-		data: make(map[string]*sds.SDS),
+		data:   make(map[string]*sds.SDS),
+		expire: NewExpire(),
 	}
 }
 
-func (s *Store) Set(key string, value []byte) error {
+func (s *Store) Set(key string, value []byte, ttl time.Duration) error {
 
 	if len(value) > MaxStringSize {
 		return ErrStringTooLarge
@@ -35,19 +39,45 @@ func (s *Store) Set(key string, value []byte) error {
 		return err
 	}
 
+	if ttl < 0 {
+		return errors.New("invalid ttl")
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if ttl == 0 {
+		delete(s.expire.expireData, key)
+	} else {
+		s.expire.createKeyExpirationTime(key, ttl)
+	}
 
 	s.data[key] = newSDS
 
 	return nil
 }
 
-func (s *Store) Get(key string) (*sds.SDS, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
+func (s *Store) getLockedKey(key string) (*sds.SDS, bool) {
 	value, exists := s.data[key]
+	if !exists {
+		return nil, false
+	}
+
+	if s.expire.alreadyExpiredKey(key) {
+		delete(s.data, key)
+		delete(s.expire.expireData, key)
+		return nil, false
+	}
+
+	return value, true
+
+}
+
+func (s *Store) Get(key string) (*sds.SDS, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	value, exists := s.getLockedKey(key)
 	if !exists {
 		return nil, false
 	}
@@ -62,10 +92,11 @@ func (s *Store) Del(keys []string) int {
 	keysDeleted := 0
 
 	for _, key := range keys {
-		if _, exists := s.data[key]; !exists {
+		if _, exists := s.getLockedKey(key); !exists {
 			continue
 		}
 		delete(s.data, key)
+		delete(s.expire.expireData, key)
 		keysDeleted++
 	}
 
@@ -74,13 +105,14 @@ func (s *Store) Del(keys []string) int {
 
 func (s *Store) Exists(keys []string) int {
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	existingKeys := 0
 
 	for _, key := range keys {
-		if _, exists := s.data[key]; exists {
+		_, exists := s.getLockedKey(key)
+		if exists {
 			existingKeys++
 		}
 	}
@@ -92,7 +124,7 @@ func (s *Store) Append(key string, suffix []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	current, exists := s.data[key]
+	current, exists := s.getLockedKey(key)
 
 	if !exists {
 		replacement, err := sds.NewSDSFromBytes(suffix)
@@ -130,7 +162,7 @@ func (s *Store) Decr(key string) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, exists := s.data[key]; !exists {
+	if _, exists := s.getLockedKey(key); !exists {
 		value, err := sds.NewSDSFromBytes([]byte("-1"))
 		if err != nil {
 			return 0, err
@@ -169,7 +201,7 @@ func (s *Store) Incr(key string) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, exists := s.data[key]; !exists {
+	if _, exists := s.getLockedKey(key); !exists {
 		value, err := sds.NewSDSFromBytes([]byte("1"))
 		if err != nil {
 			return -1, err
@@ -204,10 +236,10 @@ func (s *Store) Incr(key string) (int64, error) {
 }
 
 func (s *Store) Strlen(key string) int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	if _, exists := s.data[key]; !exists {
+	if _, exists := s.getLockedKey(key); !exists {
 		return 0
 	}
 
@@ -260,4 +292,70 @@ func parseDecimalInt64(data []byte) (int64, error) {
 	}
 
 	return int64(value), nil
+}
+
+func (s *Store) StartActiveExpireCycle(ctx context.Context, intervalo time.Duration) {
+	ticker := time.NewTicker(intervalo)
+
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s.activeExpireCycle(1 * time.Millisecond)
+			}
+		}
+	}()
+}
+
+func (s *Store) activeExpireCycle(timeBudget time.Duration) {
+	startTime := time.Now()
+
+	for {
+		if time.Since(startTime) >= timeBudget {
+			break
+		}
+
+		s.mu.Lock()
+
+		totalExpires := len(s.expire.expireData)
+		if totalExpires == 0 {
+			s.mu.Unlock()
+			break
+		}
+
+		sampled := 0
+		expired := 0
+		maxSamples := 20
+		if totalExpires < maxSamples {
+			maxSamples = totalExpires
+		}
+
+		for key, when := range s.expire.expireData {
+			if sampled >= maxSamples {
+				break
+			}
+			sampled++
+
+			if s.expire.alreadyExpiredAt(when) {
+				delete(s.expire.expireData, key)
+				delete(s.data, key)
+				expired++
+			}
+		}
+
+		s.mu.Unlock()
+
+		if sampled == 0 {
+			break
+		}
+
+		if expired*4 > sampled {
+			continue
+		}
+
+		break
+	}
 }
