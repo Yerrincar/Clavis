@@ -45,6 +45,23 @@ func requireStoreKeyRemoved(t *testing.T, store *Store, key string) {
 	}
 }
 
+func newLimitedStore(maxBytes int64) *Store {
+	store := NewStore()
+	store.limit.MaxBytes = maxBytes
+	return store
+}
+
+func requireStoreUsage(t *testing.T, store *Store, want int64) {
+	t.Helper()
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+
+	if got := store.actualUsage; got != want {
+		t.Fatalf("actualUsage = %d, want %d", got, want)
+	}
+}
+
 func TestStoreBasicStringCommands(t *testing.T) {
 	store := NewStore()
 	input := []byte("hello")
@@ -244,4 +261,130 @@ func TestStoreActiveExpiryRemovesBothMaps(t *testing.T) {
 	store.activeExpireCycle(time.Millisecond)
 
 	requireStoreKeyRemoved(t, store, "key")
+}
+
+func TestStoreSetMemoryLimitTracksReplacements(t *testing.T) {
+	store := newLimitedStore(5)
+
+	if err := store.Set("a", []byte("1234"), 0); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+	requireStoreUsage(t, store, 5)
+
+	if err := store.Set("a", []byte("12345"), 0); !errors.Is(err, ErrMemoryLimitSurpassed) {
+		t.Fatalf("Set() error = %v, want %v", err, ErrMemoryLimitSurpassed)
+	}
+	requireStoreValue(t, store, "a", "1234")
+	requireStoreUsage(t, store, 5)
+
+	if err := store.Set("a", []byte("12"), 0); err != nil {
+		t.Fatalf("Set(smaller) error = %v", err)
+	}
+	requireStoreUsage(t, store, 3)
+}
+
+func TestStoreMutationMemoryLimitsPreserveValues(t *testing.T) {
+	t.Run("append", func(t *testing.T) {
+		store := newLimitedStore(4)
+		if err := store.Set("a", []byte("b"), 0); err != nil {
+			t.Fatalf("Set() error = %v", err)
+		}
+		if _, err := store.Append("a", []byte("cde")); !errors.Is(err, ErrMemoryLimitSurpassed) {
+			t.Fatalf("Append() error = %v, want %v", err, ErrMemoryLimitSurpassed)
+		}
+		requireStoreValue(t, store, "a", "b")
+		requireStoreUsage(t, store, 2)
+	})
+
+	t.Run("incr", func(t *testing.T) {
+		store := newLimitedStore(2)
+		if err := store.Set("a", []byte("9"), 0); err != nil {
+			t.Fatalf("Set() error = %v", err)
+		}
+		if _, err := store.Incr("a"); !errors.Is(err, ErrMemoryLimitSurpassed) {
+			t.Fatalf("Incr() error = %v, want %v", err, ErrMemoryLimitSurpassed)
+		}
+		requireStoreValue(t, store, "a", "9")
+		requireStoreUsage(t, store, 2)
+	})
+
+	t.Run("decr", func(t *testing.T) {
+		store := newLimitedStore(2)
+		if err := store.Set("a", []byte("0"), 0); err != nil {
+			t.Fatalf("Set() error = %v", err)
+		}
+		if _, err := store.Decr("a"); !errors.Is(err, ErrMemoryLimitSurpassed) {
+			t.Fatalf("Decr() error = %v, want %v", err, ErrMemoryLimitSurpassed)
+		}
+		requireStoreValue(t, store, "a", "0")
+		requireStoreUsage(t, store, 2)
+	})
+}
+
+func TestStoreMemoryLimitRejectsNewMutationKeys(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Store) error
+	}{
+		{
+			name: "append",
+			mutate: func(store *Store) error {
+				_, err := store.Append("a", []byte("b"))
+				return err
+			},
+		},
+		{
+			name: "incr",
+			mutate: func(store *Store) error {
+				_, err := store.Incr("a")
+				return err
+			},
+		},
+		{
+			name: "decr",
+			mutate: func(store *Store) error {
+				_, err := store.Decr("a")
+				return err
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := newLimitedStore(1)
+
+			if err := test.mutate(store); !errors.Is(err, ErrMemoryLimitSurpassed) {
+				t.Fatalf("mutation error = %v, want %v", err, ErrMemoryLimitSurpassed)
+			}
+			if _, exists := store.Get("a"); exists {
+				t.Fatal("rejected mutation created a key")
+			}
+			requireStoreUsage(t, store, 0)
+		})
+	}
+}
+
+func TestStoreCleanupReleasesMemoryLimitUsage(t *testing.T) {
+	t.Run("delete", func(t *testing.T) {
+		store := newLimitedStore(2)
+		if err := store.Set("a", []byte("b"), 0); err != nil {
+			t.Fatalf("Set() error = %v", err)
+		}
+		store.Del([]string{"a"})
+		requireStoreUsage(t, store, 0)
+	})
+
+	t.Run("passive expiry", func(t *testing.T) {
+		store := newLimitedStore(2)
+		expireStoreKey(t, store, "a", "b")
+		store.Get("a")
+		requireStoreUsage(t, store, 0)
+	})
+
+	t.Run("active expiry", func(t *testing.T) {
+		store := newLimitedStore(2)
+		expireStoreKey(t, store, "a", "b")
+		store.activeExpireCycle(time.Millisecond)
+		requireStoreUsage(t, store, 0)
+	})
 }

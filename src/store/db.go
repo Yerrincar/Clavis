@@ -13,22 +13,45 @@ import (
 const MaxStringSize = 512 << 20
 
 var ErrStringTooLarge = errors.New("string exceeds maximum allowed size")
+var ErrMemoryLimitSurpassed = errors.New("max cache limit exceeded with that addition")
 var ErrInvalidInteger = errors.New("value is not an integer or out of range")
 
 type Store struct {
-	mu     sync.RWMutex
-	data   map[string]*sds.SDS
-	expire *Expire
+	mu          sync.RWMutex
+	actualUsage int64
+	limit       *Limit
+	data        map[string]*sds.SDS
+	expire      *Expire
 }
 
 func NewStore() *Store {
 	return &Store{
-		data:   make(map[string]*sds.SDS),
-		expire: NewExpire(),
+		limit:       NewLimit(),
+		actualUsage: 0,
+		data:        make(map[string]*sds.SDS),
+		expire:      NewExpire(),
 	}
 }
 
 func (s *Store) Set(key string, value []byte, ttl time.Duration) error {
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	oldCost := 0
+	newCost := len(key) + len(value)
+
+	_, exists := s.data[key]
+	if !exists {
+		if (int64(newCost) + s.actualUsage) > s.limit.MaxBytes {
+			return ErrMemoryLimitSurpassed
+		}
+	} else {
+		oldCost = len(key) + s.data[key].Len()
+		if (s.actualUsage - int64(oldCost) + int64(newCost)) > s.limit.MaxBytes {
+			return ErrMemoryLimitSurpassed
+		}
+	}
 
 	if len(value) > MaxStringSize {
 		return ErrStringTooLarge
@@ -43,9 +66,6 @@ func (s *Store) Set(key string, value []byte, ttl time.Duration) error {
 		return errors.New("invalid ttl")
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if ttl == 0 {
 		delete(s.expire.expireData, key)
 	} else {
@@ -53,6 +73,8 @@ func (s *Store) Set(key string, value []byte, ttl time.Duration) error {
 	}
 
 	s.data[key] = newSDS
+
+	s.actualUsage = s.actualUsage - int64(oldCost) + int64(newCost)
 
 	return nil
 }
@@ -64,6 +86,7 @@ func (s *Store) getLockedKey(key string) (*sds.SDS, bool) {
 	}
 
 	if s.expire.alreadyExpiredKey(key) {
+		s.actualUsage -= int64(len(key) + value.Len())
 		delete(s.data, key)
 		delete(s.expire.expireData, key)
 		return nil, false
@@ -92,9 +115,11 @@ func (s *Store) Del(keys []string) int {
 	keysDeleted := 0
 
 	for _, key := range keys {
-		if _, exists := s.getLockedKey(key); !exists {
+		value, exists := s.getLockedKey(key)
+		if !exists {
 			continue
 		}
+		s.actualUsage -= int64(len(key) + value.Len())
 		delete(s.data, key)
 		delete(s.expire.expireData, key)
 		keysDeleted++
@@ -125,15 +150,28 @@ func (s *Store) Append(key string, suffix []byte) (int, error) {
 	defer s.mu.Unlock()
 
 	current, exists := s.getLockedKey(key)
+	oldCost := 0
+	newCost := len(key) + len(suffix)
 
 	if !exists {
+		if int64(newCost)+s.actualUsage > s.limit.MaxBytes {
+			return 0, ErrMemoryLimitSurpassed
+		}
+
 		replacement, err := sds.NewSDSFromBytes(suffix)
 		if err != nil {
 			return 0, err
 		}
 		s.data[key] = replacement
+		s.actualUsage += int64(newCost)
 		return replacement.Len(), nil
 
+	}
+
+	oldCost = len(key) + current.Len()
+	newCost = len(key) + current.Len() + len(suffix)
+	if s.actualUsage-int64(oldCost)+int64(newCost) > s.limit.MaxBytes {
+		return 0, ErrMemoryLimitSurpassed
 	}
 
 	replacement, err := sds.NewSDS(current.Len() + len(suffix))
@@ -153,6 +191,7 @@ func (s *Store) Append(key string, suffix []byte) (int, error) {
 	}
 
 	s.data[key] = replacement
+	s.actualUsage = s.actualUsage - int64(oldCost) + int64(newCost)
 
 	return replacement.Len(), nil
 }
@@ -163,12 +202,18 @@ func (s *Store) Decr(key string) (int64, error) {
 	defer s.mu.Unlock()
 
 	if _, exists := s.getLockedKey(key); !exists {
+		newCost := len(key) + len("-1")
+		if int64(newCost)+s.actualUsage > s.limit.MaxBytes {
+			return 0, ErrMemoryLimitSurpassed
+		}
+
 		value, err := sds.NewSDSFromBytes([]byte("-1"))
 		if err != nil {
 			return 0, err
 		}
 
 		s.data[key] = value
+		s.actualUsage += int64(newCost)
 		return -1, nil
 	}
 
@@ -186,6 +231,11 @@ func (s *Store) Decr(key string) (int64, error) {
 
 	var buffer [20]byte
 	encoded := strconv.AppendInt(buffer[:0], number, 10)
+	oldCost := len(key) + value.Len()
+	newCost := len(key) + len(encoded)
+	if s.actualUsage-int64(oldCost)+int64(newCost) > s.limit.MaxBytes {
+		return -1, ErrMemoryLimitSurpassed
+	}
 
 	replacement, err := sds.NewSDSFromBytes(encoded)
 	if err != nil {
@@ -193,6 +243,7 @@ func (s *Store) Decr(key string) (int64, error) {
 	}
 
 	s.data[key] = replacement
+	s.actualUsage = s.actualUsage - int64(oldCost) + int64(newCost)
 
 	return number, nil
 }
@@ -202,12 +253,18 @@ func (s *Store) Incr(key string) (int64, error) {
 	defer s.mu.Unlock()
 
 	if _, exists := s.getLockedKey(key); !exists {
+		newCost := len(key) + len("1")
+		if int64(newCost)+s.actualUsage > s.limit.MaxBytes {
+			return -1, ErrMemoryLimitSurpassed
+		}
+
 		value, err := sds.NewSDSFromBytes([]byte("1"))
 		if err != nil {
 			return -1, err
 		}
 
 		s.data[key] = value
+		s.actualUsage += int64(newCost)
 		return 1, nil
 	}
 
@@ -224,6 +281,11 @@ func (s *Store) Incr(key string) (int64, error) {
 
 	var buffer [20]byte
 	encoded := strconv.AppendInt(buffer[:0], number, 10)
+	oldCost := len(key) + value.Len()
+	newCost := len(key) + len(encoded)
+	if s.actualUsage-int64(oldCost)+int64(newCost) > s.limit.MaxBytes {
+		return -1, ErrMemoryLimitSurpassed
+	}
 
 	replacement, err := sds.NewSDSFromBytes(encoded)
 	if err != nil {
@@ -231,6 +293,7 @@ func (s *Store) Incr(key string) (int64, error) {
 	}
 
 	s.data[key] = replacement
+	s.actualUsage = s.actualUsage - int64(oldCost) + int64(newCost)
 
 	return number, nil
 }
@@ -340,8 +403,12 @@ func (s *Store) activeExpireCycle(timeBudget time.Duration) {
 			sampled++
 
 			if s.expire.alreadyExpiredAt(when) {
+				value, exists := s.data[key]
+				if exists {
+					s.actualUsage -= int64(len(key) + value.Len())
+					delete(s.data, key)
+				}
 				delete(s.expire.expireData, key)
-				delete(s.data, key)
 				expired++
 			}
 		}
