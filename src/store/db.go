@@ -1,7 +1,7 @@
 package store
 
 import (
-	sds "Clavis/src/dataStructures"
+	ds "Clavis/src/dataStructures"
 	"context"
 	"errors"
 	"math"
@@ -20,7 +20,8 @@ type Store struct {
 	mu          sync.RWMutex
 	actualUsage int64
 	limit       *Limit
-	data        map[string]*sds.SDS
+	data        map[string]*ds.SDS
+	lruCache    *ds.LRUCache
 	expire      *Expire
 }
 
@@ -28,7 +29,8 @@ func NewStore() *Store {
 	return &Store{
 		limit:       NewLimit(),
 		actualUsage: 0,
-		data:        make(map[string]*sds.SDS),
+		data:        make(map[string]*ds.SDS),
+		lruCache:    ds.NewLRUCache(),
 		expire:      NewExpire(),
 	}
 }
@@ -40,24 +42,7 @@ func (s *Store) Set(key string, value []byte, ttl time.Duration) error {
 
 	oldCost := 0
 	newCost := len(key) + len(value)
-
-	_, exists := s.data[key]
-	if !exists {
-		if (int64(newCost) + s.actualUsage) > s.limit.MaxBytes {
-			return ErrMemoryLimitSurpassed
-		}
-	} else {
-		oldCost = len(key) + s.data[key].Len()
-		if (s.actualUsage - int64(oldCost) + int64(newCost)) > s.limit.MaxBytes {
-			return ErrMemoryLimitSurpassed
-		}
-	}
-
-	if len(value) > MaxStringSize {
-		return ErrStringTooLarge
-	}
-
-	newSDS, err := sds.NewSDSFromBytes(value)
+	newSDS, err := ds.NewSDSFromBytes(value)
 	if err != nil {
 		return err
 	}
@@ -66,20 +51,57 @@ func (s *Store) Set(key string, value []byte, ttl time.Duration) error {
 		return errors.New("invalid ttl")
 	}
 
+	_, exists := s.data[key]
+	if !exists {
+		for (int64(newCost) + s.actualUsage) > s.limit.MaxBytes {
+			if int64(newCost) > s.limit.MaxBytes {
+				return ErrMemoryLimitSurpassed
+			}
+			victimKey, found := s.lruCache.Evict(key)
+			if !found {
+				return ErrMemoryLimitSurpassed
+			}
+			value, exists := s.getLockedKey(victimKey)
+			if !exists {
+				continue
+			}
+			s.actualUsage -= int64(len(victimKey) + value.Len())
+			delete(s.data, victimKey)
+			delete(s.expire.expireData, victimKey)
+		}
+	} else {
+		oldCost = len(key) + s.data[key].Len()
+		for (s.actualUsage - int64(oldCost) + int64(newCost)) > s.limit.MaxBytes {
+			if int64(newCost) > s.limit.MaxBytes {
+				return ErrMemoryLimitSurpassed
+			}
+			victimKey, found := s.lruCache.Evict(key)
+			if !found {
+				return ErrMemoryLimitSurpassed
+			}
+			value, exists := s.getLockedKey(victimKey)
+			if !exists {
+				continue
+			}
+			s.actualUsage -= int64(len(victimKey) + value.Len())
+			delete(s.data, victimKey)
+			delete(s.expire.expireData, victimKey)
+		}
+	}
+
 	if ttl == 0 {
 		delete(s.expire.expireData, key)
 	} else {
 		s.expire.createKeyExpirationTime(key, ttl)
 	}
-
 	s.data[key] = newSDS
-
 	s.actualUsage = s.actualUsage - int64(oldCost) + int64(newCost)
+	s.lruCache.Put(key)
 
 	return nil
 }
 
-func (s *Store) getLockedKey(key string) (*sds.SDS, bool) {
+func (s *Store) getLockedKey(key string) (*ds.SDS, bool) {
 	value, exists := s.data[key]
 	if !exists {
 		return nil, false
@@ -96,7 +118,7 @@ func (s *Store) getLockedKey(key string) (*sds.SDS, bool) {
 
 }
 
-func (s *Store) Get(key string) (*sds.SDS, bool) {
+func (s *Store) Get(key string) (*ds.SDS, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -105,6 +127,9 @@ func (s *Store) Get(key string) (*sds.SDS, bool) {
 		return nil, false
 	}
 
+	node := s.lruCache.Cache[key]
+
+	s.lruCache.MoveToFront(node)
 	return value, true
 }
 
@@ -158,7 +183,7 @@ func (s *Store) Append(key string, suffix []byte) (int, error) {
 			return 0, ErrMemoryLimitSurpassed
 		}
 
-		replacement, err := sds.NewSDSFromBytes(suffix)
+		replacement, err := ds.NewSDSFromBytes(suffix)
 		if err != nil {
 			return 0, err
 		}
@@ -174,7 +199,7 @@ func (s *Store) Append(key string, suffix []byte) (int, error) {
 		return 0, ErrMemoryLimitSurpassed
 	}
 
-	replacement, err := sds.NewSDS(current.Len() + len(suffix))
+	replacement, err := ds.NewSDS(current.Len() + len(suffix))
 	if err != nil {
 		return 0, err
 	}
@@ -207,7 +232,7 @@ func (s *Store) Decr(key string) (int64, error) {
 			return 0, ErrMemoryLimitSurpassed
 		}
 
-		value, err := sds.NewSDSFromBytes([]byte("-1"))
+		value, err := ds.NewSDSFromBytes([]byte("-1"))
 		if err != nil {
 			return 0, err
 		}
@@ -237,7 +262,7 @@ func (s *Store) Decr(key string) (int64, error) {
 		return -1, ErrMemoryLimitSurpassed
 	}
 
-	replacement, err := sds.NewSDSFromBytes(encoded)
+	replacement, err := ds.NewSDSFromBytes(encoded)
 	if err != nil {
 		return -1, err
 	}
@@ -258,7 +283,7 @@ func (s *Store) Incr(key string) (int64, error) {
 			return -1, ErrMemoryLimitSurpassed
 		}
 
-		value, err := sds.NewSDSFromBytes([]byte("1"))
+		value, err := ds.NewSDSFromBytes([]byte("1"))
 		if err != nil {
 			return -1, err
 		}
@@ -287,7 +312,7 @@ func (s *Store) Incr(key string) (int64, error) {
 		return -1, ErrMemoryLimitSurpassed
 	}
 
-	replacement, err := sds.NewSDSFromBytes(encoded)
+	replacement, err := ds.NewSDSFromBytes(encoded)
 	if err != nil {
 		return -1, err
 	}

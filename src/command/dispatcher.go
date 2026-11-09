@@ -1,7 +1,7 @@
 package command
 
 import (
-	sds "Clavis/src/dataStructures"
+	ds "Clavis/src/dataStructures"
 	"Clavis/src/store"
 	"bytes"
 	"errors"
@@ -22,7 +22,7 @@ const (
 
 type Reply struct {
 	Type   ReplyType
-	Bytes  *sds.SDS
+	Bytes  *ds.SDS
 	String string
 	Num    int64
 	Array  []*Reply
@@ -44,7 +44,7 @@ func NewService() *Service {
 	}
 }
 
-func (s *Service) Execute(args []*sds.SDS) *Reply {
+func (s *Service) Execute(args []*ds.SDS) *Reply {
 	if len(args) == 0 {
 		return &Reply{Type: TypeError, Err: EmptyArgs}
 	}

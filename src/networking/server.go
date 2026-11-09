@@ -2,7 +2,7 @@ package networking
 
 import (
 	"Clavis/src/command"
-	sds "Clavis/src/dataStructures"
+	ds "Clavis/src/dataStructures"
 	"Clavis/src/resp"
 	"errors"
 	"log"
@@ -40,15 +40,15 @@ type bulkParseState struct {
 	received   int
 	remaining  int
 	mode       string
-	currentSDS *sds.SDS
+	currentSDS *ds.SDS
 }
 
 type arrayParseState struct {
 	active       bool
 	expected     int
 	completed    int
-	arguments    []*sds.SDS
-	commands     [][]*sds.SDS
+	arguments    []*ds.SDS
+	commands     [][]*ds.SDS
 	commandBytes int
 }
 
@@ -59,8 +59,8 @@ func NewBulkParseState() *bulkParseState {
 }
 func NewArrayParseState() *arrayParseState {
 	return &arrayParseState{
-		arguments: []*sds.SDS{},
-		commands:  [][]*sds.SDS{},
+		arguments: []*ds.SDS{},
+		commands:  [][]*ds.SDS{},
 	}
 }
 
@@ -313,7 +313,7 @@ func (h *Handler) consumeHeader(queryBuff *[]byte, length int, header int, bulkS
 	}
 
 	if length == 0 {
-		bulkState.currentSDS = &sds.SDS{}
+		bulkState.currentSDS = &ds.SDS{}
 		*queryBuff = (*queryBuff)[header:]
 		bulkState.expected = 0
 		bulkState.received = 0
@@ -323,7 +323,7 @@ func (h *Handler) consumeHeader(queryBuff *[]byte, length int, header int, bulkS
 		return nil
 	}
 
-	currentSDS, err := sds.NewSDS(length)
+	currentSDS, err := ds.NewSDS(length)
 	if err != nil {
 		return err
 	}

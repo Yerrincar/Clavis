@@ -3,13 +3,13 @@ package command
 import (
 	"testing"
 
-	sds "Clavis/src/dataStructures"
+	ds "Clavis/src/dataStructures"
 )
 
-func commandSDS(t *testing.T, value string) *sds.SDS {
+func commandSDS(t *testing.T, value string) *ds.SDS {
 	t.Helper()
 
-	result, err := sds.NewSDS(len(value))
+	result, err := ds.NewSDS(len(value))
 	if err != nil {
 		t.Fatalf("NewSDS() error = %v", err)
 	}
@@ -26,7 +26,7 @@ func commandSDS(t *testing.T, value string) *sds.SDS {
 }
 
 func TestExecuteRejectsWrongGetArity(t *testing.T) {
-	reply := NewService().Execute([]*sds.SDS{commandSDS(t, "GET")})
+	reply := NewService().Execute([]*ds.SDS{commandSDS(t, "GET")})
 
 	if reply.Type != TypeError {
 		t.Fatalf("Execute() reply type = %v, want %v", reply.Type, TypeError)
@@ -39,12 +39,12 @@ func TestExecuteRejectsWrongGetArity(t *testing.T) {
 func TestExecutePingReplies(t *testing.T) {
 	service := NewService()
 
-	if reply := service.Execute([]*sds.SDS{commandSDS(t, "PING")}); reply.Type != TypeStatus || reply.String != "PONG" {
+	if reply := service.Execute([]*ds.SDS{commandSDS(t, "PING")}); reply.Type != TypeStatus || reply.String != "PONG" {
 		t.Fatalf("PING reply = %#v, want PONG status", reply)
 	}
 
 	message := commandSDS(t, "hello")
-	if reply := service.Execute([]*sds.SDS{commandSDS(t, "PING"), message}); reply.Type != TypeBulk || string(reply.Bytes.BorrowBytes()) != "hello" {
+	if reply := service.Execute([]*ds.SDS{commandSDS(t, "PING"), message}); reply.Type != TypeBulk || string(reply.Bytes.BorrowBytes()) != "hello" {
 		t.Fatalf("PING message reply = %#v, want hello Bulk String", reply)
 	}
 }
@@ -52,7 +52,7 @@ func TestExecutePingReplies(t *testing.T) {
 func TestExecuteSetAcceptsOptionalTTL(t *testing.T) {
 	service := NewService()
 
-	for _, command := range [][]*sds.SDS{
+	for _, command := range [][]*ds.SDS{
 		{commandSDS(t, "SET"), commandSDS(t, "persistent"), commandSDS(t, "value")},
 		{commandSDS(t, "SET"), commandSDS(t, "temporary"), commandSDS(t, "value"), commandSDS(t, "1h")},
 	} {

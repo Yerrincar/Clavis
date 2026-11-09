@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	sds "Clavis/src/dataStructures"
+	ds "Clavis/src/dataStructures"
 )
 
 func TestParseArrayEmpty(t *testing.T) {
@@ -24,7 +24,7 @@ func TestParseArrayEmpty(t *testing.T) {
 }
 
 func TestSerializeBulkString(t *testing.T) {
-	value, err := sds.NewSDS(3)
+	value, err := ds.NewSDS(3)
 	if err != nil {
 		t.Fatalf("NewSDS() error = %v", err)
 	}

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	sds "Clavis/src/dataStructures"
+	ds "Clavis/src/dataStructures"
 	"Clavis/src/resp"
 )
 
@@ -43,7 +43,7 @@ func TestConsumeHeaderRejectsOversizedBulk(t *testing.T) {
 }
 
 func TestParseBulkCompletesSplitTrailer(t *testing.T) {
-	payload, err := sds.NewSDS(3)
+	payload, err := ds.NewSDS(3)
 	if err != nil {
 		t.Fatalf("NewSDS() error = %v", err)
 	}
@@ -95,7 +95,7 @@ func TestParseElementRejectsNonBulkCommandArgument(t *testing.T) {
 }
 
 func TestCompleteCommandTransfersArguments(t *testing.T) {
-	argument, err := sds.NewSDS(1)
+	argument, err := ds.NewSDS(1)
 	if err != nil {
 		t.Fatalf("NewSDS() error = %v", err)
 	}
@@ -104,7 +104,7 @@ func TestCompleteCommandTransfersArguments(t *testing.T) {
 		active:    true,
 		expected:  1,
 		completed: 1,
-		arguments: []*sds.SDS{argument},
+		arguments: []*ds.SDS{argument},
 	}
 	state.completeCommand()
 

@@ -1,9 +1,9 @@
 package object
 
-import sds "Clavis/src/dataStructures"
+import ds "Clavis/src/dataStructures"
 
 type obj struct {
-	sds *sds.SDS
+	sds *ds.SDS
 }
 
 func (o *obj) trimStringObjectIfNeeded() {

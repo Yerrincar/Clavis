@@ -1,7 +1,7 @@
 package resp
 
 import (
-	sds "Clavis/src/dataStructures"
+	ds "Clavis/src/dataStructures"
 	"bufio"
 	"bytes"
 	"errors"
@@ -353,7 +353,7 @@ func (r *RespSVC) SerializeInteger(value int64) []byte {
 	return append(response, CR, LF)
 }
 
-func (r *RespSVC) SerializeBulkString(value *sds.SDS) ([][]byte, error) {
+func (r *RespSVC) SerializeBulkString(value *ds.SDS) ([][]byte, error) {
 	if value == nil {
 		return [][]byte{nullBulkString}, nil
 	}

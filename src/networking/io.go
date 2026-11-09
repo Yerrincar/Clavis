@@ -1,7 +1,7 @@
 package networking
 
 import (
-	sds "Clavis/src/dataStructures"
+	ds "Clavis/src/dataStructures"
 	"io"
 )
 
@@ -38,7 +38,7 @@ func WriteAll(w io.Writer, parts [][]byte) error {
 	return nil
 }
 
-func (h *Handler) ReadIntoBulkSDS(r io.Reader, sds *sds.SDS, n int) (int, error) {
+func (h *Handler) ReadIntoBulkSDS(r io.Reader, sds *ds.SDS, n int) (int, error) {
 	availableRegion, err := sds.AvailableWritableRegion(n)
 	if err != nil {
 		return 0, err
@@ -57,7 +57,7 @@ func (h *Handler) ReadIntoBulkSDS(r io.Reader, sds *sds.SDS, n int) (int, error)
 	return bytesWritten, nil
 }
 
-func (h *Handler) CopyBufferedBulkIntoSDS(data []byte, sdsP *sds.SDS) error {
+func (h *Handler) CopyBufferedBulkIntoSDS(data []byte, sdsP *ds.SDS) error {
 	err := sdsP.MakeRoomFor(len(data))
 	if err != nil {
 		return err

@@ -321,6 +321,34 @@ func TestStoreMutationMemoryLimitsPreserveValues(t *testing.T) {
 	})
 }
 
+func TestStoreSetEvictsLeastRecentlyUsedKey(t *testing.T) {
+	store := newLimitedStore(4)
+
+	if err := store.Set("a", []byte("1"), 0); err != nil {
+		t.Fatalf("Set(a) error = %v", err)
+	}
+	if err := store.Set("b", []byte("2"), 0); err != nil {
+		t.Fatalf("Set(b) error = %v", err)
+	}
+	if _, exists := store.Get("a"); !exists {
+		t.Fatal("Get(a) did not find a value")
+	}
+
+	if err := store.Set("c", []byte("3"), 0); err != nil {
+		t.Fatalf("Set(c) error = %v", err)
+	}
+	if _, exists := store.Get("b"); exists {
+		t.Fatal("SET c did not evict least recently used key b")
+	}
+	requireStoreValue(t, store, "a", "1")
+	requireStoreValue(t, store, "c", "3")
+	requireStoreUsage(t, store, 4)
+
+	if _, exists := store.lruCache.Cache["b"]; exists {
+		t.Fatal("evicted key b remained in the LRU index")
+	}
+}
+
 func TestStoreMemoryLimitRejectsNewMutationKeys(t *testing.T) {
 	tests := []struct {
 		name   string
