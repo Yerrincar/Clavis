@@ -103,3 +103,30 @@ func (l *LRUCache) Put(key string) {
 
 	l.Cache[key] = newNode
 }
+
+func (l *LRUCache) Remove(key string) bool {
+	victim := l.Cache[key]
+
+	if victim == nil {
+		return false
+	}
+	if victim.prev != nil {
+		victim.prev.next = victim.next
+	} else {
+		l.head = victim.next
+	}
+
+	if victim.next != nil {
+		victim.next.prev = victim.prev
+	} else {
+		l.Tail = victim.prev
+	}
+
+	delete(l.Cache, victim.Key)
+
+	victim.prev = nil
+	victim.next = nil
+
+	return true
+
+}

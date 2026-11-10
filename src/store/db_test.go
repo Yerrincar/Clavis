@@ -45,6 +45,18 @@ func requireStoreKeyRemoved(t *testing.T, store *Store, key string) {
 	}
 }
 
+func requireLRUKey(t *testing.T, store *Store, key string, want bool) {
+	t.Helper()
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+
+	_, got := store.lruCache.Cache[key]
+	if got != want {
+		t.Fatalf("LRU key %q exists = %t, want %t", key, got, want)
+	}
+}
+
 func newLimitedStore(maxBytes int64) *Store {
 	store := NewStore()
 	store.limit.MaxBytes = maxBytes
@@ -415,4 +427,272 @@ func TestStoreCleanupReleasesMemoryLimitUsage(t *testing.T) {
 		store.activeExpireCycle(time.Millisecond)
 		requireStoreUsage(t, store, 0)
 	})
+}
+
+func TestStoreNewMutationKeysJoinAndUseLRU(t *testing.T) {
+	tests := []struct {
+		name     string
+		maxBytes int64
+		mutate   func(*Store) error
+	}{
+		{
+			name:     "append",
+			maxBytes: 4,
+			mutate: func(store *Store) error {
+				_, err := store.Append("a", []byte("1"))
+				return err
+			},
+		},
+		{
+			name:     "incr",
+			maxBytes: 4,
+			mutate: func(store *Store) error {
+				_, err := store.Incr("a")
+				return err
+			},
+		},
+		{
+			name:     "decr",
+			maxBytes: 5,
+			mutate: func(store *Store) error {
+				_, err := store.Decr("a")
+				return err
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := newLimitedStore(test.maxBytes)
+			if err := test.mutate(store); err != nil {
+				t.Fatalf("mutation error = %v", err)
+			}
+			requireLRUKey(t, store, "a", true)
+
+			if err := store.Set("b", []byte("2"), 0); err != nil {
+				t.Fatalf("Set(b) error = %v", err)
+			}
+			if _, exists := store.Get("a"); !exists {
+				t.Fatal("Get(a) did not find a value")
+			}
+			if err := store.Set("c", []byte("3"), 0); err != nil {
+				t.Fatalf("Set(c) error = %v", err)
+			}
+
+			if _, exists := store.Get("b"); exists {
+				t.Fatal("recently used a did not outlive b")
+			}
+		})
+	}
+}
+
+func TestStoreExistingMutationsRefreshLRU(t *testing.T) {
+	tests := []struct {
+		name     string
+		maxBytes int64
+		mutate   func(*Store) error
+	}{
+		{
+			name:     "append",
+			maxBytes: 5,
+			mutate: func(store *Store) error {
+				_, err := store.Append("a", []byte("x"))
+				return err
+			},
+		},
+		{
+			name:     "incr",
+			maxBytes: 4,
+			mutate: func(store *Store) error {
+				_, err := store.Incr("a")
+				return err
+			},
+		},
+		{
+			name:     "decr",
+			maxBytes: 5,
+			mutate: func(store *Store) error {
+				_, err := store.Decr("a")
+				return err
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := newLimitedStore(test.maxBytes)
+			if err := store.Set("a", []byte("0"), 0); err != nil {
+				t.Fatalf("Set(a) error = %v", err)
+			}
+			if err := store.Set("b", []byte("2"), 0); err != nil {
+				t.Fatalf("Set(b) error = %v", err)
+			}
+			if err := test.mutate(store); err != nil {
+				t.Fatalf("mutation error = %v", err)
+			}
+			if err := store.Set("c", []byte("3"), 0); err != nil {
+				t.Fatalf("Set(c) error = %v", err)
+			}
+
+			if _, exists := store.Get("b"); exists {
+				t.Fatal("mutated a did not outlive b")
+			}
+		})
+	}
+}
+
+func TestStoreRemovalPathsClearLRU(t *testing.T) {
+	t.Run("delete", func(t *testing.T) {
+		store := NewStore()
+		if err := store.Set("a", []byte("1"), 0); err != nil {
+			t.Fatalf("Set(a) error = %v", err)
+		}
+
+		store.Del([]string{"a"})
+		requireLRUKey(t, store, "a", false)
+	})
+
+	t.Run("passive expiry", func(t *testing.T) {
+		store := NewStore()
+		expireStoreKey(t, store, "a", "1")
+
+		store.Get("a")
+		requireLRUKey(t, store, "a", false)
+	})
+
+	t.Run("active expiry", func(t *testing.T) {
+		store := NewStore()
+		expireStoreKey(t, store, "a", "1")
+
+		store.activeExpireCycle(time.Millisecond)
+		requireLRUKey(t, store, "a", false)
+	})
+}
+
+func TestStoreCapacityMutationsPurgeExpiredKeysBeforeEviction(t *testing.T) {
+	tests := []struct {
+		name       string
+		maxBytes   int64
+		setup      func(*Store) error
+		mutate     func(*Store) error
+		wantTarget string
+	}{
+		{
+			name:     "set new key",
+			maxBytes: 4,
+			mutate: func(store *Store) error {
+				return store.Set("c", []byte("3"), 0)
+			},
+			wantTarget: "3",
+		},
+		{
+			name:     "append new key",
+			maxBytes: 4,
+			mutate: func(store *Store) error {
+				_, err := store.Append("c", []byte("3"))
+				return err
+			},
+			wantTarget: "3",
+		},
+		{
+			name:     "incr new key",
+			maxBytes: 4,
+			mutate: func(store *Store) error {
+				_, err := store.Incr("c")
+				return err
+			},
+			wantTarget: "1",
+		},
+		{
+			name:     "decr new key",
+			maxBytes: 5,
+			mutate: func(store *Store) error {
+				_, err := store.Decr("c")
+				return err
+			},
+			wantTarget: "-1",
+		},
+		{
+			name:     "set existing key",
+			maxBytes: 6,
+			setup: func(store *Store) error {
+				return store.Set("c", []byte("0"), 0)
+			},
+			mutate: func(store *Store) error {
+				return store.Set("c", []byte("xx"), 0)
+			},
+			wantTarget: "xx",
+		},
+		{
+			name:     "append existing key",
+			maxBytes: 6,
+			setup: func(store *Store) error {
+				return store.Set("c", []byte("0"), 0)
+			},
+			mutate: func(store *Store) error {
+				_, err := store.Append("c", []byte("x"))
+				return err
+			},
+			wantTarget: "0x",
+		},
+		{
+			name:     "incr existing key",
+			maxBytes: 6,
+			setup: func(store *Store) error {
+				return store.Set("c", []byte("9"), 0)
+			},
+			mutate: func(store *Store) error {
+				_, err := store.Incr("c")
+				return err
+			},
+			wantTarget: "10",
+		},
+		{
+			name:     "decr existing key",
+			maxBytes: 6,
+			setup: func(store *Store) error {
+				return store.Set("c", []byte("0"), 0)
+			},
+			mutate: func(store *Store) error {
+				_, err := store.Decr("c")
+				return err
+			},
+			wantTarget: "-1",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := newLimitedStore(test.maxBytes)
+			if err := store.Set("a", []byte("1"), time.Hour); err != nil {
+				t.Fatalf("Set(a) error = %v", err)
+			}
+			if err := store.Set("b", []byte("2"), 0); err != nil {
+				t.Fatalf("Set(b) error = %v", err)
+			}
+			if test.setup != nil {
+				if err := test.setup(store); err != nil {
+					t.Fatalf("setup error = %v", err)
+				}
+			}
+			if _, exists := store.Get("a"); !exists {
+				t.Fatal("Get(a) did not find a value")
+			}
+
+			store.mu.Lock()
+			store.expire.expireData["a"] = time.Now().Add(-time.Millisecond).UnixMilli()
+			store.mu.Unlock()
+
+			if err := test.mutate(store); err != nil {
+				t.Fatalf("mutation error = %v", err)
+			}
+
+			if _, exists := store.Get("a"); exists {
+				t.Fatal("expired key a remained in the Store")
+			}
+			requireStoreValue(t, store, "b", "2")
+			requireStoreValue(t, store, "c", test.wantTarget)
+			requireLRUKey(t, store, "a", false)
+		})
+	}
 }

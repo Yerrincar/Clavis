@@ -40,7 +40,6 @@ func (s *Store) Set(key string, value []byte, ttl time.Duration) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	oldCost := 0
 	newCost := len(key) + len(value)
 	newSDS, err := ds.NewSDSFromBytes(value)
 	if err != nil {
@@ -51,42 +50,13 @@ func (s *Store) Set(key string, value []byte, ttl time.Duration) error {
 		return errors.New("invalid ttl")
 	}
 
-	_, exists := s.data[key]
-	if !exists {
-		for (int64(newCost) + s.actualUsage) > s.limit.MaxBytes {
-			if int64(newCost) > s.limit.MaxBytes {
-				return ErrMemoryLimitSurpassed
-			}
-			victimKey, found := s.lruCache.Evict(key)
-			if !found {
-				return ErrMemoryLimitSurpassed
-			}
-			value, exists := s.getLockedKey(victimKey)
-			if !exists {
-				continue
-			}
-			s.actualUsage -= int64(len(victimKey) + value.Len())
-			delete(s.data, victimKey)
-			delete(s.expire.expireData, victimKey)
-		}
-	} else {
-		oldCost = len(key) + s.data[key].Len()
-		for (s.actualUsage - int64(oldCost) + int64(newCost)) > s.limit.MaxBytes {
-			if int64(newCost) > s.limit.MaxBytes {
-				return ErrMemoryLimitSurpassed
-			}
-			victimKey, found := s.lruCache.Evict(key)
-			if !found {
-				return ErrMemoryLimitSurpassed
-			}
-			value, exists := s.getLockedKey(victimKey)
-			if !exists {
-				continue
-			}
-			s.actualUsage -= int64(len(victimKey) + value.Len())
-			delete(s.data, victimKey)
-			delete(s.expire.expireData, victimKey)
-		}
+	current, exists := s.getLockedKey(key)
+	oldCost := 0
+	if exists {
+		oldCost = len(key) + current.Len()
+	}
+	if err := s.makeRoomLocked(key, oldCost, newCost); err != nil {
+		return err
 	}
 
 	if ttl == 0 {
@@ -111,6 +81,7 @@ func (s *Store) getLockedKey(key string) (*ds.SDS, bool) {
 		s.actualUsage -= int64(len(key) + value.Len())
 		delete(s.data, key)
 		delete(s.expire.expireData, key)
+		s.lruCache.Remove(key)
 		return nil, false
 	}
 
@@ -147,6 +118,7 @@ func (s *Store) Del(keys []string) int {
 		s.actualUsage -= int64(len(key) + value.Len())
 		delete(s.data, key)
 		delete(s.expire.expireData, key)
+		s.lruCache.Remove(key)
 		keysDeleted++
 	}
 
@@ -163,6 +135,8 @@ func (s *Store) Exists(keys []string) int {
 	for _, key := range keys {
 		_, exists := s.getLockedKey(key)
 		if exists {
+			node := s.lruCache.Cache[key]
+			s.lruCache.MoveToFront(node)
 			existingKeys++
 		}
 	}
@@ -177,45 +151,36 @@ func (s *Store) Append(key string, suffix []byte) (int, error) {
 	current, exists := s.getLockedKey(key)
 	oldCost := 0
 	newCost := len(key) + len(suffix)
+	var replacement *ds.SDS
 
 	if !exists {
-		if int64(newCost)+s.actualUsage > s.limit.MaxBytes {
-			return 0, ErrMemoryLimitSurpassed
-		}
-
-		replacement, err := ds.NewSDSFromBytes(suffix)
+		var err error
+		replacement, err = ds.NewSDSFromBytes(suffix)
 		if err != nil {
 			return 0, err
 		}
-		s.data[key] = replacement
-		s.actualUsage += int64(newCost)
-		return replacement.Len(), nil
-
+	} else {
+		oldCost = len(key) + current.Len()
+		newCost = len(key) + current.Len() + len(suffix)
+		var err error
+		replacement, err = ds.NewSDS(current.Len() + len(suffix))
+		if err != nil {
+			return 0, err
+		}
+		if err := replacement.Append(current.BorrowBytes()); err != nil {
+			return 0, err
+		}
+		if err := replacement.Append(suffix); err != nil {
+			return 0, err
+		}
 	}
 
-	oldCost = len(key) + current.Len()
-	newCost = len(key) + current.Len() + len(suffix)
-	if s.actualUsage-int64(oldCost)+int64(newCost) > s.limit.MaxBytes {
-		return 0, ErrMemoryLimitSurpassed
-	}
-
-	replacement, err := ds.NewSDS(current.Len() + len(suffix))
-	if err != nil {
-		return 0, err
-	}
-
-	//sust for the combination of the new one instead of adding to the existing one
-	err = replacement.Append(current.BorrowBytes())
-	if err != nil {
-		return 0, err
-	}
-
-	err = replacement.Append(suffix)
-	if err != nil {
+	if err := s.makeRoomLocked(key, oldCost, newCost); err != nil {
 		return 0, err
 	}
 
 	s.data[key] = replacement
+	s.lruCache.Put(key)
 	s.actualUsage = s.actualUsage - int64(oldCost) + int64(newCost)
 
 	return replacement.Len(), nil
@@ -226,48 +191,41 @@ func (s *Store) Decr(key string) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, exists := s.getLockedKey(key); !exists {
-		newCost := len(key) + len("-1")
-		if int64(newCost)+s.actualUsage > s.limit.MaxBytes {
-			return 0, ErrMemoryLimitSurpassed
-		}
-
-		value, err := ds.NewSDSFromBytes([]byte("-1"))
+	value, exists := s.getLockedKey(key)
+	oldCost := 0
+	number := int64(-1)
+	var replacement *ds.SDS
+	var err error
+	if !exists {
+		replacement, err = ds.NewSDSFromBytes([]byte("-1"))
 		if err != nil {
 			return 0, err
 		}
+	} else {
+		number, err = parseDecimalInt64(value.BorrowBytes())
+		if err != nil {
+			return -1, err
+		}
+		if number == math.MinInt64 {
+			return -1, ErrInvalidInteger
+		}
+		number--
 
-		s.data[key] = value
-		s.actualUsage += int64(newCost)
-		return -1, nil
+		var buffer [20]byte
+		encoded := strconv.AppendInt(buffer[:0], number, 10)
+		replacement, err = ds.NewSDSFromBytes(encoded)
+		if err != nil {
+			return -1, err
+		}
+		oldCost = len(key) + value.Len()
 	}
-
-	value := s.data[key]
-
-	number, err := parseDecimalInt64(value.BorrowBytes())
-	if err != nil {
-		return -1, err
-	}
-
-	if number == math.MinInt64 {
-		return -1, ErrInvalidInteger
-	}
-	number--
-
-	var buffer [20]byte
-	encoded := strconv.AppendInt(buffer[:0], number, 10)
-	oldCost := len(key) + value.Len()
-	newCost := len(key) + len(encoded)
-	if s.actualUsage-int64(oldCost)+int64(newCost) > s.limit.MaxBytes {
-		return -1, ErrMemoryLimitSurpassed
-	}
-
-	replacement, err := ds.NewSDSFromBytes(encoded)
-	if err != nil {
+	newCost := len(key) + replacement.Len()
+	if err := s.makeRoomLocked(key, oldCost, newCost); err != nil {
 		return -1, err
 	}
 
 	s.data[key] = replacement
+	s.lruCache.Put(key)
 	s.actualUsage = s.actualUsage - int64(oldCost) + int64(newCost)
 
 	return number, nil
@@ -277,47 +235,41 @@ func (s *Store) Incr(key string) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, exists := s.getLockedKey(key); !exists {
-		newCost := len(key) + len("1")
-		if int64(newCost)+s.actualUsage > s.limit.MaxBytes {
-			return -1, ErrMemoryLimitSurpassed
-		}
-
-		value, err := ds.NewSDSFromBytes([]byte("1"))
+	value, exists := s.getLockedKey(key)
+	oldCost := 0
+	number := int64(1)
+	var replacement *ds.SDS
+	var err error
+	if !exists {
+		replacement, err = ds.NewSDSFromBytes([]byte("1"))
 		if err != nil {
 			return -1, err
 		}
+	} else {
+		number, err = parseDecimalInt64(value.BorrowBytes())
+		if err != nil {
+			return -1, err
+		}
+		if number == math.MaxInt64 {
+			return -1, ErrInvalidInteger
+		}
+		number++
 
-		s.data[key] = value
-		s.actualUsage += int64(newCost)
-		return 1, nil
+		var buffer [20]byte
+		encoded := strconv.AppendInt(buffer[:0], number, 10)
+		replacement, err = ds.NewSDSFromBytes(encoded)
+		if err != nil {
+			return -1, err
+		}
+		oldCost = len(key) + value.Len()
 	}
-
-	value := s.data[key]
-
-	number, err := parseDecimalInt64(value.BorrowBytes())
-	if err != nil {
-		return -1, err
-	}
-	if number == math.MaxInt64 {
-		return -1, ErrInvalidInteger
-	}
-	number++
-
-	var buffer [20]byte
-	encoded := strconv.AppendInt(buffer[:0], number, 10)
-	oldCost := len(key) + value.Len()
-	newCost := len(key) + len(encoded)
-	if s.actualUsage-int64(oldCost)+int64(newCost) > s.limit.MaxBytes {
-		return -1, ErrMemoryLimitSurpassed
-	}
-
-	replacement, err := ds.NewSDSFromBytes(encoded)
-	if err != nil {
+	newCost := len(key) + replacement.Len()
+	if err := s.makeRoomLocked(key, oldCost, newCost); err != nil {
 		return -1, err
 	}
 
 	s.data[key] = replacement
+	s.lruCache.Put(key)
 	s.actualUsage = s.actualUsage - int64(oldCost) + int64(newCost)
 
 	return number, nil
@@ -332,6 +284,8 @@ func (s *Store) Strlen(key string) int {
 	}
 
 	value := s.data[key]
+	node := s.lruCache.Cache[key]
+	s.lruCache.MoveToFront(node)
 	return value.Len()
 }
 
@@ -432,6 +386,7 @@ func (s *Store) activeExpireCycle(timeBudget time.Duration) {
 				if exists {
 					s.actualUsage -= int64(len(key) + value.Len())
 					delete(s.data, key)
+					s.lruCache.Remove(key)
 				}
 				delete(s.expire.expireData, key)
 				expired++
@@ -449,5 +404,50 @@ func (s *Store) activeExpireCycle(timeBudget time.Duration) {
 		}
 
 		break
+	}
+}
+
+func (s *Store) makeRoomLocked(key string, oldCost, newCost int) error {
+	if int64(newCost) > s.limit.MaxBytes {
+		return ErrMemoryLimitSurpassed
+	}
+
+	if s.actualUsage-int64(oldCost)+int64(newCost) > s.limit.MaxBytes {
+		s.removeExpiredLockedKeys(key)
+	}
+
+	for s.actualUsage-int64(oldCost)+int64(newCost) > s.limit.MaxBytes {
+		victimKey, found := s.lruCache.Evict(key)
+		if !found {
+			return ErrMemoryLimitSurpassed
+		}
+
+		value, exists := s.getLockedKey(victimKey)
+		if !exists {
+			continue
+		}
+		s.actualUsage -= int64(len(victimKey) + value.Len())
+		delete(s.data, victimKey)
+		delete(s.expire.expireData, victimKey)
+	}
+
+	return nil
+}
+
+func (s *Store) removeExpiredLockedKeys(excludedKey string) {
+	for key, expirationTime := range s.expire.expireData {
+		if key == excludedKey {
+			continue
+		}
+		if !s.expire.alreadyExpiredAt(expirationTime) {
+			continue
+		}
+		value, exists := s.data[key]
+		if exists {
+			s.actualUsage -= int64(len(key) + value.Len())
+			delete(s.data, key)
+			s.lruCache.Remove(key)
+		}
+		delete(s.expire.expireData, key)
 	}
 }
