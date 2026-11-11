@@ -18,6 +18,7 @@ var ErrInvalidInteger = errors.New("value is not an integer or out of range")
 
 type Store struct {
 	mu          sync.RWMutex
+	counters    counters
 	actualUsage int64
 	limit       *Limit
 	data        map[string]*ds.SDS
@@ -27,11 +28,10 @@ type Store struct {
 
 func NewStore() *Store {
 	return &Store{
-		limit:       NewLimit(),
-		actualUsage: 0,
-		data:        make(map[string]*ds.SDS),
-		lruCache:    ds.NewLRUCache(),
-		expire:      NewExpire(),
+		limit:    NewLimit(),
+		data:     make(map[string]*ds.SDS),
+		lruCache: ds.NewLRUCache(),
+		expire:   NewExpire(),
 	}
 }
 
@@ -82,6 +82,7 @@ func (s *Store) getLockedKey(key string) (*ds.SDS, bool) {
 		delete(s.data, key)
 		delete(s.expire.expireData, key)
 		s.lruCache.Remove(key)
+		s.counters.expired.Add(1)
 		return nil, false
 	}
 
@@ -95,12 +96,14 @@ func (s *Store) Get(key string) (*ds.SDS, bool) {
 
 	value, exists := s.getLockedKey(key)
 	if !exists {
+		s.counters.misses.Add(1)
 		return nil, false
 	}
 
 	node := s.lruCache.Cache[key]
 
 	s.lruCache.MoveToFront(node)
+	s.counters.hits.Add(1)
 	return value, true
 }
 
@@ -387,6 +390,7 @@ func (s *Store) activeExpireCycle(timeBudget time.Duration) {
 					s.actualUsage -= int64(len(key) + value.Len())
 					delete(s.data, key)
 					s.lruCache.Remove(key)
+					s.counters.expired.Add(1)
 				}
 				delete(s.expire.expireData, key)
 				expired++
@@ -409,6 +413,7 @@ func (s *Store) activeExpireCycle(timeBudget time.Duration) {
 
 func (s *Store) makeRoomLocked(key string, oldCost, newCost int) error {
 	if int64(newCost) > s.limit.MaxBytes {
+		s.counters.rejected.Add(1)
 		return ErrMemoryLimitSurpassed
 	}
 
@@ -419,6 +424,7 @@ func (s *Store) makeRoomLocked(key string, oldCost, newCost int) error {
 	for s.actualUsage-int64(oldCost)+int64(newCost) > s.limit.MaxBytes {
 		victimKey, found := s.lruCache.Evict(key)
 		if !found {
+			s.counters.rejected.Add(1)
 			return ErrMemoryLimitSurpassed
 		}
 
@@ -429,6 +435,7 @@ func (s *Store) makeRoomLocked(key string, oldCost, newCost int) error {
 		s.actualUsage -= int64(len(victimKey) + value.Len())
 		delete(s.data, victimKey)
 		delete(s.expire.expireData, victimKey)
+		s.counters.evicted.Add(1)
 	}
 
 	return nil
@@ -447,7 +454,23 @@ func (s *Store) removeExpiredLockedKeys(excludedKey string) {
 			s.actualUsage -= int64(len(key) + value.Len())
 			delete(s.data, key)
 			s.lruCache.Remove(key)
+			s.counters.expired.Add(1)
 		}
 		delete(s.expire.expireData, key)
+	}
+}
+
+func (s *Store) StatsInfo() Stats {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return Stats{
+		Items:    int64(len(s.data)),
+		Bytes:    s.actualUsage,
+		Hits:     s.counters.hits.Load(),
+		Misses:   s.counters.misses.Load(),
+		Expired:  s.counters.expired.Load(),
+		Evicted:  s.counters.evicted.Load(),
+		Rejected: s.counters.rejected.Load(),
 	}
 }

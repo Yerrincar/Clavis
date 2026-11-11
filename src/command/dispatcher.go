@@ -5,6 +5,7 @@ import (
 	"Clavis/src/store"
 	"bytes"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -186,6 +187,20 @@ func (s *Service) Execute(args []*ds.SDS) *Reply {
 		default:
 			return &Reply{Type: TypeError, Err: errors.New("wrong number of arguments for 'ping' command")}
 		}
+
+	case bytes.Equal(cmd, []byte("STATS")):
+		if len(args) != 1 {
+			return &Reply{Type: TypeError, Err: errors.New("wrong number of arguments for 'stats' command")}
+		}
+
+		stats := s.Store.StatsInfo()
+
+		response := fmt.Sprintf("Items: %d\nBytes: %d\nHits: %d\nMisses: %d\nExpired: %d\nEvicted: %d\nRejected: %d", stats.Items, stats.Bytes, stats.Hits, stats.Misses, stats.Expired, stats.Evicted, stats.Rejected)
+		responseSDS, err := ds.NewSDSFromBytes([]byte(response))
+		if err != nil {
+			return &Reply{Type: TypeError, Err: err}
+		}
+		return &Reply{Type: TypeBulk, Bytes: responseSDS}
 
 	default:
 		return &Reply{Type: TypeError,

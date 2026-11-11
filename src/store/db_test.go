@@ -74,6 +74,14 @@ func requireStoreUsage(t *testing.T, store *Store, want int64) {
 	}
 }
 
+func requireStats(t *testing.T, store *Store, want Stats) {
+	t.Helper()
+
+	if got := store.StatsInfo(); got != want {
+		t.Fatalf("StatsInfo() = %#v, want %#v", got, want)
+	}
+}
+
 func TestStoreBasicStringCommands(t *testing.T) {
 	store := NewStore()
 	input := []byte("hello")
@@ -695,4 +703,70 @@ func TestStoreCapacityMutationsPurgeExpiredKeysBeforeEviction(t *testing.T) {
 			requireLRUKey(t, store, "a", false)
 		})
 	}
+}
+
+func TestStoreStats(t *testing.T) {
+	t.Run("get hit miss and passive expiry", func(t *testing.T) {
+		store := NewStore()
+		store.Get("missing")
+		if err := store.Set("a", []byte("1"), 0); err != nil {
+			t.Fatalf("Set(a) error = %v", err)
+		}
+		store.Get("a")
+		expireStoreKey(t, store, "b", "1")
+		store.Get("b")
+
+		requireStats(t, store, Stats{Items: 1, Bytes: 2, Hits: 1, Misses: 2, Expired: 1})
+	})
+
+	t.Run("active expiry", func(t *testing.T) {
+		store := NewStore()
+		expireStoreKey(t, store, "a", "1")
+		store.activeExpireCycle(time.Millisecond)
+
+		requireStats(t, store, Stats{Expired: 1})
+	})
+
+	t.Run("pressure expiry", func(t *testing.T) {
+		store := newLimitedStore(4)
+		if err := store.Set("a", []byte("1"), time.Hour); err != nil {
+			t.Fatalf("Set(a) error = %v", err)
+		}
+		if err := store.Set("b", []byte("2"), 0); err != nil {
+			t.Fatalf("Set(b) error = %v", err)
+		}
+		store.Get("a")
+		store.mu.Lock()
+		store.expire.expireData["a"] = time.Now().Add(-time.Millisecond).UnixMilli()
+		store.mu.Unlock()
+		if err := store.Set("c", []byte("3"), 0); err != nil {
+			t.Fatalf("Set(c) error = %v", err)
+		}
+
+		requireStats(t, store, Stats{Items: 2, Bytes: 4, Hits: 1, Expired: 1})
+	})
+
+	t.Run("LRU eviction", func(t *testing.T) {
+		store := newLimitedStore(4)
+		if err := store.Set("a", []byte("1"), 0); err != nil {
+			t.Fatalf("Set(a) error = %v", err)
+		}
+		if err := store.Set("b", []byte("2"), 0); err != nil {
+			t.Fatalf("Set(b) error = %v", err)
+		}
+		if err := store.Set("c", []byte("3"), 0); err != nil {
+			t.Fatalf("Set(c) error = %v", err)
+		}
+
+		requireStats(t, store, Stats{Items: 2, Bytes: 4, Evicted: 1})
+	})
+
+	t.Run("rejected write", func(t *testing.T) {
+		store := newLimitedStore(1)
+		if err := store.Set("a", []byte("12"), 0); !errors.Is(err, ErrMemoryLimitSurpassed) {
+			t.Fatalf("Set() error = %v, want %v", err, ErrMemoryLimitSurpassed)
+		}
+
+		requireStats(t, store, Stats{Rejected: 1})
+	})
 }

@@ -61,3 +61,15 @@ func TestExecuteSetAcceptsOptionalTTL(t *testing.T) {
 		}
 	}
 }
+
+func TestExecuteStatsReply(t *testing.T) {
+	reply := NewService().Execute([]*ds.SDS{commandSDS(t, "STATS")})
+	if reply.Type != TypeBulk {
+		t.Fatalf("STATS reply type = %v, want %v", reply.Type, TypeBulk)
+	}
+
+	want := "Items: 0\nBytes: 0\nHits: 0\nMisses: 0\nExpired: 0\nEvicted: 0\nRejected: 0"
+	if got := string(reply.Bytes.BorrowBytes()); got != want {
+		t.Fatalf("STATS reply = %q, want %q", got, want)
+	}
+}
